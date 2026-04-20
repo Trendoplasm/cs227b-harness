@@ -7,7 +7,7 @@ The harness uses [Playwright](https://playwright.dev/) to automate the same 3-ta
 ## Quick Start
 
 ```bash
-git clone <repo-url> && cd cs227b-harness
+git clone https://github.com/Trendoplasm/cs227b-harness.git && cd cs227b-harness
 npm install
 npx playwright install chromium
 ```
