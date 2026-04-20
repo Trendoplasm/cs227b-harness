@@ -1,11 +1,11 @@
 // run-suite.mjs — run N matches, check pass criteria, emit a summary.
 //
 // Shared flags (passed through to run-match.mjs):
-//   --player, --opponent, --game, --matchup, --verbose, --headed
+//   --player, --opponent, --game, --matchup, --verbose, --headed, --disable-throttle
 //
 // Suite-only flags:
 //   --matches <n>                   default 10
-//   --min-score <n>                 pass if score >= n (default: just finish without errors)
+//   --min-score <n>                 pass if score >= n (default 50: must at least draw)
 //   --min-score-as-player1 <n>      threshold when playing first; alternates roles per match
 //   --min-score-as-player2 <n>      threshold when playing second
 
@@ -19,7 +19,7 @@ const dim = (s) => `\x1b[2m${s}\x1b[0m`;
 const bold = (s) => `\x1b[1m${s}\x1b[0m`;
 
 function parseArgs(argv) {
-  const out = { matches: 10, minScore: 50, swapRoles: false };
+  const out = { matches: 10, minScore: 50, swapRoles: false, throttle: true };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--player')            out.player = argv[++i];
@@ -33,6 +33,7 @@ function parseArgs(argv) {
     else if (a === '--swap-roles')        out.swapRoles = true;
     else if (a === '--verbose')          out.verbose = true;
     else if (a === '--headed')           out.headed = true;
+    else if (a === '--disable-throttle') out.throttle = false;
   }
   return out;
 }
@@ -139,6 +140,7 @@ async function main() {
           swapRoles,
           verbose: opts.verbose,
           headed: opts.headed,
+          throttle: opts.throttle,
         });
       } catch (e) {
         r = { matchId: label, error: String(e), our_errors: 999, opp_errors: 0, our_score: 0, opp_score: 0, winner: 'error', terminal: false, timedOut: false };

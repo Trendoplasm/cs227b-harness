@@ -10,6 +10,9 @@
 //   --swap-roles                if set, passes opponent as players[0] and
 //                               player as players[1] instead of the default
 //                               (player=players[0], opponent=players[1]).
+//   --verbose                   log all protocol messages (SEND/RECV)
+//   --headed                    run in a visible browser; stays open after game
+//   --disable-throttle          disable background-tab timer throttling (on by default)
 
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
@@ -25,7 +28,7 @@ const BASE = `http://localhost:${PORT}`;
 const PER_MATCH_TIMEOUT_MS = Number(process.env.MATCH_TIMEOUT_MS || 400_000);
 
 function parseArgs(argv) {
-  const out = { swapRoles: false, verbose: false, headed: false };
+  const out = { swapRoles: false, verbose: false, headed: false, throttle: true };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--player')    out.player   = argv[++i];
@@ -36,6 +39,7 @@ function parseArgs(argv) {
     else if (a === '--swap-roles') out.swapRoles = true;
     else if (a === '--verbose')   out.verbose = true;
     else if (a === '--headed')    out.headed = true;
+    else if (a === '--disable-throttle') out.throttle = false;
   }
   return out;
 }
@@ -184,6 +188,23 @@ async function runMatch(opts) {
       await mgrPage.evaluate(verboseHook, 'manager');
       await usPage.evaluate(verboseHook, usIdentifier);
       await oppPage.evaluate(verboseHook, oppIdentifier);
+    }
+
+    if (opts.throttle) {
+      const throttleHook = () => {
+        const MIN_DELAY = 1000;
+        const origTimeout = window.setTimeout;
+        window.setTimeout = function(fn, delay, ...args) {
+          return origTimeout.call(window, fn, Math.max(delay || 0, MIN_DELAY), ...args);
+        };
+        const origInterval = window.setInterval;
+        window.setInterval = function(fn, delay, ...args) {
+          return origInterval.call(window, fn, Math.max(delay || 0, MIN_DELAY), ...args);
+        };
+      };
+      await usPage.evaluate(throttleHook);
+      await oppPage.evaluate(throttleHook);
+      log('runner', 'timer throttling enabled on player tabs (1000ms min)');
     }
 
     log('runner', 'click Ping');
