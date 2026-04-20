@@ -1,0 +1,392 @@
+
+<html>
+
+<!--=======================================================================-->
+
+<head>
+  <title>two_musketeers</title>
+  <script type='text/javascript' src='/vendor/epilog.js'></script>
+  <script type='text/javascript' src='/vendor/localstorage.js'></script>
+  <script type='text/javascript' src='/vendor/optimizer.js'></script>
+  <script type='text/javascript' src='/vendor/materializer.js'></script>
+  <script type='text/javascript' src='/vendor/simplifier.js'></script>
+  <script type='text/javascript' src='/vendor/grounder.js'></script>
+  <script type='text/javascript' src='/vendor/symbolizer.js'></script>
+  <script type='text/javascript' src='/vendor/symbol.js'></script>
+  <script type='text/javascript' src='/vendor/pruner.js'></script>
+  <script type='text/javascript' src='/vendor/hybrid.js'></script>
+  <script type='text/javascript'>
+
+//==============================================================================
+// For our final player, our team implemented a Monte Carlo Tree Search (MCTS) strategy. The core idea of this strategy is that the game is modeled as a search tree, wherein individual nodes represent game states and their corresponding edges represent the moves that lead from one state to another. This strategy uses random sampling to simulate potential outcomes of moves from a given state.
+
+// Monte Carlo Tree Search operates in four phases: selection (balancing exploration and exploitation to recursively select child nodes from the current game state to maximize reward), expansion (adding new nodes to a non-terminal leaf node to explore potential game states), simulation (simulating a random game from the newly expanded node until a terminal state is reached), and backpropagation (using the result of the stimulation and propogating it up the tree and updating reward values/visit counts for each node on the way up). Using MCTS. the player continues to expand and process this tree until the clock runs out, at which point it makes a decision on which move to take based on the results of its search.
+
+// This player also makes several optimizations to improve its searching capabilities using metagaming optimizations. During the start clock, the player prunes useless subgoals and useless rules, and it also improves subgoal ordering using the Simplifier. This player also makes use of grounding via the Grounder, in which it replaces variables with grounded terms to allow for more efficient interpretation of grounded rules. If the player is able to ground the rules within a certain time limit, it also symbolizes the rules using the Symbolizer to allow for even more effective searching (up to 10x more nodes searched than without symbolizing). After symbolizing, the rules are simplified using the Simplifier. Irrelevant actions are also pruned via the Pruner, which allows the player to ignore pathways that do not contribute its score, allowing it to dedicate more time to searching more promising pathways.
+
+// In the event that the player cannot ground in time, the player simply uses the original rules without the additional optimizations mentioned.This player also uses Headstart during the start clock, in which it begins constructing the search tree with whatever time it has left in the start clock, which means it will have already constructed part of the game tree by the time of its turn.
+
+// Based on the results of the metagaming, the player still uses the MCTS strategy, but the optimizations from the Metagamers allow it to have searched many more nodes in advance.
+
+// One strength of this player is that MCTS has good scalability and can handle large and complex games that have many complex game states, which means that it can do well in games like Connect Four and Breakthrough. 
+
+// One weakness of this player is that the player is susceptible to biases when the tree is still shallow, meaning that it may not explore more optimal paths until the tree is more thoroughly constructed. As such, this player may not perform as well in games that make use of intermediate reward values, such as Skirmish and Crusade. In these cases, a Greedy player would be more effective as they capitalize on intermediate reward values.
+
+// In terms of development, our player went through multiple iterations. At first, we used a Minimax player, then a Minimax with Iterative Deepening player, then a MCTS player, then a Greedy Minimax player. Of these four, we found the most success with MCTS on the class leaderboard, so we decided to move forward with this strategy. Over the next few weeks, we added the optimizations outlined above as we went over those topics in lecture.
+
+// In terms of testing, we had our player play against both the default players and the players of other teams every week as we developed our player. At first, our testing was to ensure that the features we implemented worked properly. Once this was covered, we made adjustments to try to beat these other players, and we submitted our players once we were able to beat other players a majority of the time.
+
+// If given more time, we would have worked more on the HTML page of our player to make it look nicer. Additionally, it could have been good to explore the option of switching strategies based on whether the metagaming procedures found the game to be using intermediate reward values or not. If it did, we could switch to a Greedy Minimax strategy. If note, we could stick to the MCTS strategy.
+
+// Thanks for a great quarter!
+
+// --Two Musketeers (Ian Ng & Lour Drick Valsote)
+//==============================================================================
+
+var manager = 'manager';
+var player = 'two_musketeers';
+
+var role = 'robot';
+var rules = [];
+var startclock = 10;
+var playclock = 10;
+
+var library = [];
+var roles = [];
+var state = [];
+var tree = {};
+
+var symbol = false;
+
+//==============================================================================
+
+function ping () {
+  return 'ready'
+}
+
+
+function start (r,rs,sc,pc)
+ {role = r;
+  rules = rs.slice(1);
+  startclock = numberize(sc);
+  playclock = numberize(pc);
+
+  rules = prunerulesubgoals(rules);
+  rules = prunerules(rules);
+  rules = fixrules(rules);
+
+  rules = definemorerules([],rules);
+  var newrules = groundrules(rules, 0.2 * startclock * 1000);
+  if (newrules) {
+    rules = symbolizerules(newrules);
+    interpreter = 'symbol'
+    rules = simplifyrules(rules);
+    rules = definemorerules([], rules);
+    rules = pruneprogram(role, rules);
+  }
+
+  library = definemorerules([], rules);
+  roles = findroles(library);
+  state = findinits(library);
+  var active = findcontrol(state,library);
+  var reward = parseInt(findreward(role,state,library));
+  tree = makenode(state,active,reward,false);
+
+  var deadline = Date.now() + (startclock - 1) * 1000;
+  while (Date.now() < deadline) {process(tree); };
+  console.log('Headstart finished.')
+
+  return 'ready'}
+
+function play (move)
+ {if (interpreter==='symbol') {move = symbolizeatom(move)};
+  if (move!==nil) {tree = subtree(move,tree); state = tree.state};
+  if (findcontrol(state,library)!==role) {return false};
+  move = playmcts(move);
+  if (move && interpreter==='symbol') {move = unsymbolizeatom(move)};
+  return move}
+
+function stop (move) {
+  return false
+}
+
+function abort () {
+  return false
+}
+
+
+//==============================================================================
+
+function makenode (state,mover,utility,complete) {
+  return {state:state,
+          actions:[],
+          children:[],
+          mover:mover,
+          utility:utility,
+          visits:0,
+          probes:0,
+          complete:complete}
+}
+
+//==============================================================================
+// mcts
+//==============================================================================
+
+var nodes = 0;
+var terminals = 0;
+var depthcharges = 0;
+
+function playmcts (move) {
+  nodes = 1;
+  terminals = 0;
+  depthcharges = 0;
+
+  var deadline = Date.now() + Math.floor(playclock / 2)*1000;
+  while (Date.now() < deadline && !tree.complete) {process(tree)};
+  deadline = deadline + (playclock / 2 - 2)*1000;
+  while (Date.now() < deadline && !tree.complete) {explore(tree)};
+  var move = selectaction(tree);
+
+  console.log("Nodes: " + nodes);
+  console.log("Terminals: " + terminals);
+  console.log("Probes: " + depthcharges);
+  console.log("Utility: " + tree.utility);
+  console.log("Complete: " + tree.complete);
+  document.getElementById("numNodes").value = nodes;
+  document.getElementById("numProbes").value = depthcharges;
+  document.getElementById("moveUtility").value = tree.utility;
+  return move
+}
+
+//==============================================================================
+
+function subtree (move,node) {
+  if (node.children.length === 0)
+     {var newstate = simulate(move, node.state, library);
+      var newmover = findcontrol(newstate, library);
+      var newscore = parseInt(findreward(role, newstate, library));
+      var newcomplete = findterminalp(newstate, library);
+      return makenode(newstate, newmover, newscore, newcomplete)};
+  for (var i = 0; i < node.actions.length; i++)
+      {if (equalp(move, node.actions[i])) {return node.children[i]}}
+  return node
+}
+
+//==============================================================================
+// expand
+//==============================================================================
+
+function process (node) {
+  if (node.children.length === 0) {expand(node)}
+     else {process(selectnode(node))};
+  updatenode(node);
+  return true
+}
+
+//==============================================================================
+
+function selectnode (node) {
+  var child = node.children[0];
+  var visits = node.visits;
+  for (var i = 0; i < node.children.length; i++)
+      {var newchild = node.children[i];
+       if (newchild.complete) {continue};
+       var newvisits = newchild.visits;
+       if (newvisits < visits) {child = newchild; visits = newvisits}};
+  return child
+}
+
+//==============================================================================
+
+function expand (node) {
+  node.actions = shuffle(findlegals(node.state, library));
+  for (var i = 0; i < node.actions.length; i++)
+      {var newstate = simulate(node.actions[i], node.state, library);
+       var newmover = findcontrol(newstate, library);
+       var newscore = parseInt(findreward(role, newstate, library));
+       var newcomplete = findterminalp(newstate, library);
+       node.children[i] = makenode(newstate, newmover, newscore, newcomplete);
+       if (newcomplete) {terminals++};
+       nodes++};
+  return true
+}
+
+function shuffle (array) {
+  for (var i = array.length - 1; i > 0; i--)
+      {var j = Math.floor(Math.random() * (i + 1));
+       var temp = array[i];
+       array[i] = array[j];
+       array[j] = temp};
+  return array
+}
+
+//==============================================================================
+
+function updatenode (node) {
+  node.utility = (node.mover === role) ? scoremax(node) : scoremin(node);
+  node.complete = (node.mover === role) ? checkmax(node) : checkmin(node);
+  node.visits = node.visits + 1;
+  return true
+}
+
+function scoremax (node) {
+  var score = node.children[0].utility;
+  for (var i = 1; i < node.children.length; i++)
+      {var newscore = node.children[i].utility;
+       if (newscore > score) {score = newscore}};
+  return score
+}
+
+function scoremin (node) {
+  var score = node.children[0].utility;
+  for (var i = 1; i < node.children.length; i++)
+      {var newscore = node.children[i].utility;
+       if (newscore < score) {score = newscore}};
+  return score
+}
+
+function checkmax (node)
+ {var flag = true;
+  for (var i = 0; i < node.children.length; i++)
+      {if (!node.children[i].complete) {flag = false; continue};
+       if (node.children[i].utility === 100) {return true}};
+  return flag}
+
+function checkmin (node) {
+  var flag = true;
+  for (var i=0; i<node.children.length; i++)
+      {if (!node.children[i].complete) {flag = false; continue};
+       if (node.children[i].utility === 0) {return true}};
+  return flag
+}
+
+function checkcomplete (node) {
+  for (var i = 0; i < node.children.length; i++)
+      {if (!node.children[i].complete) {return false}};
+  return true
+}
+
+//==============================================================================
+
+function selectaction (node) {
+  var action = node.actions[0];
+  var score = -1;
+  for (var i = 0; i < node.children.length; i++)
+      {var child = node.children[i];
+       if (child.complete && child.utility === 100) {return node.actions[i]};
+       if (child.complete && child.utility === 0) {continue};
+       var newscore = child.utility;
+       if (newscore > score) {action = node.actions[i]; score = newscore}};
+  return action
+}
+
+//==============================================================================
+// explore
+//==============================================================================
+
+function explore (node) {
+  if (node.children.length===0) {return sample(node)}
+     else {explore(selectnode(node))};
+  updatenode(node);
+  return true
+}
+
+function sample (node) {
+  var utility = node.utility;
+  var probes = node.probes;
+  var score = depthcharge(node.state);
+  node.utility = Math.round((utility * probes + score) / (probes + 1));
+  node.probes++;
+  depthcharges++;
+  return true
+}
+
+//==============================================================================
+
+function depthcharge (state) {
+  if (findterminalp(state,library)) {return findreward(role, state, library) * 1};
+  var actions = findlegals(state, library);
+  if (actions.length===0) {console.log(state)};
+  var best = randomindex(actions.length);
+  var newstate = simulate(actions[best], state, library);
+  return depthcharge(newstate)
+}
+
+function randomindex (n) {
+  return Math.floor(Math.random() * n)
+}
+
+//==============================================================================
+// End of player code
+//==============================================================================
+  </script>
+</head>
+
+<!--=======================================================================-->
+
+<body bgcolor='#081231' onload='doinitialize()'>
+  <center>
+    <table width='720' cellspacing='0' cellpadding='40' bgcolor='#ffffff'>
+      <tr>
+        <td>
+<!--=======================================================================-->
+
+<center>
+  <table width='640' cellpadding='0'>
+    <tr>
+      <td width='180' align='center' valign='center'>
+        <img width='130' src='http://gamemaster.stanford.edu/images/ggp.jpg'/>
+      </td>
+      <td align='center'>
+        <span style='font-size:18pt'>&nbsp;</span>
+        <span style='font-size:32pt'>Two Musketeers</span><br/>
+      </td>
+      <td width='180' align='center' style='color:#081231;font-size:18px'>
+        <i>General<br/>Game<br/>Playing</i>
+      </td>
+    </tr>
+  </table>
+</center>
+
+<!--=======================================================================-->
+
+<br/>
+<table width='640' cellpadding='8' cellspacing='0' bgcolor='#f4f8f8' border='10'>
+  <tr height='40'>
+     <td align='center'>
+<table style='color:#081231;font-size:18px'>
+  <tr>
+    <td>
+Protocol: localstorage<br/>
+Metagamer: Headstart, Logical Optimization (Pruning), Simplification, Grounder, Symbolizer<br/>
+Strategy: MCTS<br/>
+Identifier: <span id='player'>two_musketeers</span> <img src="http://gamemaster.stanford.edu/images/pencil.gif" onclick='doplayer()'/>
+    </td>
+  </tr>
+</table>
+    </td>
+  </tr>
+</table>
+<br/>
+<input type="text" id="numNodes" name="numNodes"> Node Count</input><br/>
+<input type="text" id="numProbes" name="numProbes"> Depth Charge Count</input><br/>
+<input type="text" id="moveUtility" name="moveUtility"> Currently Examined Move Utility</input><br/>
+
+<!--=======================================================================-->
+
+<center>
+  <br/>
+  <textarea id='transcript' style='font-family:courier' rows='30' cols='80' readonly></textarea>
+</center>
+
+<!--=======================================================================-->
+
+        </td>
+      </tr>
+    </table>
+  </center>
+</body>
+
+<!--=======================================================================-->
+
+</html>

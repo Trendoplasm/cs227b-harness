@@ -1,0 +1,586 @@
+<html>
+  <!--=======================================================================-->
+
+  <head>
+    <title>bombini_gusini</title>
+    <script
+      type="text/javascript"
+      src="/vendor/epilog.js"
+    ></script>
+    <script
+      type="text/javascript"
+      src="/vendor/localstorage.js"
+    ></script>
+
+    <script type="text/javascript" src="/vendor/general.js"></script>
+
+    <script src="/vendor/simplifier.js"></script>
+
+    <script src="/vendor/materializer.js"></script>
+
+    <script src="/vendor/optimizer.js"></script>
+
+    <script src="/vendor/grounder.js"></script>
+
+    <script src="/vendor/ground.js"></script>
+
+    <script src="/vendor/symbolizer.js"></script>
+
+    <script src="/vendor/symbol.js"></script>
+
+    <script src="/vendor/hybrid.js"></script>
+
+    <script src="/vendor/pruner.js"></script>
+
+    <script type="text/javascript">
+      //==============================================================================
+      // CODE DESCRIPTION
+      //
+      // We are using grounding and symbolizing with a specialized interpreter for our final player.
+      // We added pruning for certain games only when grounding was completed on time. We noticed that our pruned player worked
+      // much better on the multiple games, because it removed unneccesary moves and narowed down the game tree for our MCTS player.
+      // We noticed that often our player didn't have time to run both headstart and bigswitch, so we decided to just include bigswitch in the program
+      // if there is still time after the grouding and pruning for smaller games. Bigswitch is important for our player to run,
+      // because it toggles between Minimax and MCTS, and chooses Minimax for smaller games with a smaller branching factor and it also sets our
+      // exploration constant for MCTS if that is the chosen player for larger games.
+      // Other than that, our MCTS player has been working well and so has minimax in their own sized games. However, MCTS was not doing
+      // well on smaller size games and Minimax was not doing well in larger games, so this process is important to our player.
+      // We decided not to save time for headstart, because we are already saving lots of time by grounding, and sometimes symbolizing and pruning.
+      // In the end, we have a player that attempts to ground rules, then if it does, it symbolizes, simplifies, and prunes the rules, if not
+      // it leaves the interpreter as general, rather than symbol. It then saves time to run bigswitch and choose to run either MCTS or Minimax.
+      //
+
+      //==============================================================================
+
+      var manager = "manager";
+      var player = "bombini_gusini";
+
+      var role = "robot";
+      var rules = [];
+      var startclock = 10;
+      var playclock = 10;
+
+      var library = [];
+      var roles = [];
+      var state = [];
+      const DEPTH_LIMIT = 7;
+      //==============================================================================
+
+      function ping() {
+        return "ready";
+      }
+      //globals
+      var head_actions = [];
+      var head_scores = [];
+      var head_visits = [];
+      var depthcharges = 0;
+      var C_EXPLORATION = 1.4;
+      var useMinimax = false;
+
+      function start(r, rs, sc, pc) {
+        role = r;
+        rules = rs.slice(1);
+        startclock = numberize(sc);
+        playclock = numberize(pc);
+
+        rules = prunerulesubgoals(rules);
+        rules = prunerules(rules);
+        rules = fixrules(rules);
+
+        rules = definemorerules([], rules);
+
+        var deadline = Date.now() + (startclock - 1) * 1000;
+        var currtime = Date.now();
+
+        var grules = groundrules(rules, deadline - currtime - 2000);
+
+        interpreter = "general";
+
+        if (grules) {
+          console.log("Grounded was completed");
+          interpreter = "symbol";
+          rules = symbolizerules(grules);
+          rules = simplifyrules(rules);
+
+          rules = definemorerules([], rules);
+          rules = pruneprogram(role, rules);
+
+          console.log("Rules symbolized, simplified, and pruned");
+        } else {
+          console.log("Not grounded");
+          intepreter = "general";
+        }
+
+        library = definemorerules([], rules);
+        roles = findroles(library);
+        state = findinits(library);
+
+        // //bigswitch
+        analyzeGame(deadline);
+
+        // //headstart
+        // headstart(deadline);
+        return "ready";
+      }
+
+      function play(move) {
+        if (interpreter == "symbol") {
+          move = symbolizeatom(move);
+        }
+        if (move !== nil) {
+          state = simulate(move, state, library);
+        }
+        if (findcontrol(state, library) !== role) {
+          return false;
+        }
+        if (useMinimax) {
+          console.log("Using Minimax");
+          move = playminimaxID(role);
+        } else {
+          console.log("Using MCTS");
+          move = playmcs(role);
+        }
+
+        if (interpreter == "symbol") {
+          move = unsymbolizeatom(move);
+        }
+        return move;
+      }
+
+      function stop(move) {
+        return false;
+      }
+
+      function abort() {
+        return false;
+      }
+
+      //headstart
+      function headstart(deadline) {
+        head_actions = shuffle(findlegals(state, library));
+        if (head_actions.length <= 1) {
+          return; // nothing to search
+        }
+        head_scores = new Array(head_actions.length).fill(0);
+        head_visits = new Array(head_actions.length).fill(0);
+        explore(head_actions, head_scores, head_visits, deadline);
+      }
+      //bigswitch
+      function analyzeGame(deadline) {
+        var samples = 30;
+        var branchTot = 0;
+        var depthTot = 0;
+        for (var s = 0; s < samples; s++) {
+          var tState = state;
+          var depth = 0;
+          while (!findterminalp(tState, library) && Date.now() < deadline) {
+            var acts = findlegals(tState, library);
+            branchTot += acts.length;
+            if (acts.length === 0) break;
+            var rand = acts[randomindex(acts.length)];
+            tState = simulate(rand, tState, library);
+            depth++;
+          }
+          depthTot += depth;
+        }
+        var avgBranch = depthTot === 0 ? 0 : branchTot / depthTot;
+
+        // decide which player to use
+        useMinimax = avgBranch < 6;
+
+        if (avgBranch > 20) {
+          C_EXPLORATION = 0.7;
+        } else if (avgBranch < 5) {
+          C_EXPLORATION = 2.5;
+        } else {
+          C_EXPLORATION = 1.4;
+        }
+      }
+
+      function sameActionSet(a1, a2) {
+        // check if it's the same set of actions
+        if (a1.length !== a2.length) return false;
+
+        var seen = {};
+        for (var i = 0; i < a1.length; i++) {
+          seen[grind ? grind(a1[i]) : JSON.stringify(a1[i])] = true;
+        }
+
+        for (var j = 0; j < a2.length; j++) {
+          var key = grind ? grind(a2[j]) : JSON.stringify(a2[j]);
+          if (!seen[key]) return false;
+        }
+        return true;
+      }
+      // Monte Carlo Search
+      function playmcs(role) {
+        var depthcharges = 0;
+        var deadline = Date.now() + Math.max(0, playclock - 1) * 1000;
+        var actions = shuffle(findlegals(state, library));
+        if (actions.length === 0) {
+          return false;
+        }
+        if (actions.length === 1) {
+          return actions[0];
+        }
+        var scores = new Array(actions.length).fill(0);
+        var visits = new Array(actions.length).fill(0);
+        if (
+          head_actions.length === actions.length &&
+          sameActionSet(actions, head_actions)
+        ) {
+          for (var i = 0; i < actions.length; i++) {
+            scores[i] = head_scores[i];
+            visits[i] = head_visits[i];
+          }
+        }
+
+        explore(actions, scores, visits, deadline);
+        return selectaction(actions, scores, visits);
+      }
+
+      function explore(actions, scores, visits, deadline) {
+        // from lecture slides
+        while (Date.now() < deadline) {
+          // if (index >= actions.length) {
+          //   index = 0;
+          // }
+          var index = ucb(scores, visits);
+          var next = simulate(actions[index], state, library);
+          var result = depthcharge(next);
+          scores[index] = scores[index] + result;
+          visits[index] = visits[index] + 1;
+          depthcharges++;
+          index++;
+        }
+        return true;
+      }
+
+      function depthcharge(state) {
+        if (findterminalp(state, library)) {
+          return findreward(role, state, library) * 1;
+        }
+        var actions = findlegals(state, library);
+        // var best = randomindex(actions.length);
+        var random = actions[randomindex(actions.length)];
+        var newstate = simulate(random, state, library);
+        return depthcharge(newstate);
+      }
+
+      function randomindex(n) {
+        return Math.floor(Math.random() * n);
+      }
+
+      function selectaction(actions, scores, visits) {
+        var best = 0;
+        var score = -1;
+        var probes = 0;
+        for (var i = 0; i < actions.length; i++) {
+          if (visits[i] === 0) {
+            continue;
+          }
+
+          var mean = scores[i] / visits[i];
+          if (mean > score || (mean === score && visits[i] < probes)) {
+            best = i;
+            score = mean;
+            probes = visits[i];
+          }
+        }
+
+        if (score < 0) {
+          best = 0;
+          score = scores[0] / Math.max(visits[0], 1);
+          probes = visits[0];
+        }
+
+        logStats(
+          "Probes: " +
+            depthcharges +
+            "  Utility: " +
+            score.toFixed(1) +
+            "  Visits: " +
+            probes
+        );
+
+        return actions[best];
+      }
+      function ucb(scores, visits) {
+        var total = visits.reduce((a, b) => a + b, 0);
+        if (total === 0) {
+          return randomindex(scores.length);
+        }
+        for (var i = 0; i < visits.length; i++) {
+          // first pass
+          if (visits[i] === 0) {
+            return i;
+          }
+        }
+        // otherwise ucb
+        var best = 0;
+        var bestVal = -1;
+        for (var i = 0; i < scores.length; i++) {
+          var mean = scores[i] / visits[i];
+          // formula from lecture slides
+          var val =
+            mean + C_EXPLORATION * Math.sqrt(Math.log(total) / visits[i]);
+          if (val > bestVal) {
+            bestVal = val;
+            best = i;
+          }
+        }
+        return best;
+      }
+
+      //==============================================================================
+      // Minimax player code
+      //==============================================================================
+      function playminimaxID(role) {
+        var actions = shuffle(findlegals(state, library));
+        if (actions.length === 0) {
+          return false;
+        }
+        if (actions.length === 1) {
+          return actions[0];
+        }
+
+        var bestAction = actions[0];
+        let bestActionCompleted = bestAction;
+        var deadline = Date.now() + (playclock - 1) * 1000;
+
+        for (var depth = 1; ; depth++) {
+          var bestScore = -1;
+
+          for (var i = 0; i < actions.length; i++) {
+            if (Date.now() > deadline) return bestActionCompleted;
+            var newstate = simulate(actions[i], state, library);
+            var newscore = minimaxID(role, newstate, depth, deadline);
+
+            if (newscore === false) {
+              return bestActionCompleted;
+            }
+
+            if (newscore === 100) {
+              return actions[i];
+            }
+            if (newscore > bestScore) {
+              bestAction = actions[i];
+              bestScore = newscore;
+            }
+          }
+          bestActionCompleted = bestAction;
+        }
+      }
+
+      function minimaxID(role, state, depth, deadline) {
+        if (findterminalp(state, library)) {
+          return findreward(role, state, library) * 1;
+        }
+        if (depth <= 0) {
+          //return mobilityEval(state, library) * 1;
+          return weightedEval(role, state);
+        }
+        if (Date.now() > deadline) {
+          return false;
+        }
+        if (findcontrol(state, library) === role) {
+          return maxScoreID(role, state, depth, deadline);
+        } else {
+          return minScoreID(role, state, depth, deadline);
+        }
+      }
+
+      function maxScoreID(role, state, depth, deadline) {
+        var actions = findlegals(state, library);
+        if (actions.length === 0) {
+          return 0;
+        }
+        var score = 0;
+        for (var i = 0; i < actions.length; i++) {
+          var newstate = simulate(actions[i], state, library);
+          var newscore = minimaxID(role, newstate, depth - 1, deadline);
+          if (newscore === false) {
+            return false;
+          }
+          if (newscore === 100) {
+            return 100;
+          }
+          if (newscore > score) {
+            score = newscore;
+          }
+        }
+        return score;
+      }
+
+      function minScoreID(role, state, depth, deadline) {
+        var actions = findlegals(state, library);
+        if (actions.length === 0) {
+          return 0;
+        }
+        var score = 100;
+        for (var i = 0; i < actions.length; i++) {
+          var newstate = simulate(actions[i], state, library);
+          var newscore = minimaxID(role, newstate, depth - 1, deadline);
+          if (newscore === false) {
+            return false;
+          }
+          if (newscore === 0) {
+            return 0;
+          }
+          if (newscore < score) {
+            score = newscore;
+          }
+        }
+        return score;
+      }
+
+      function weightedEval(role, state) {
+        if (findterminalp(state, library))
+          return findreward(role, state, library);
+        const interm = findreward(role, state, library);
+        const mob = mobilityEval(state, library);
+        return Math.round(0.7 * mob + 0.3 * interm); // adjust during start-clock
+      }
+
+      function intermediateReward(role, state) {
+        return findreward(role, state, library);
+      }
+
+      function mobilityEval(state, library) {
+        var mover = findcontrol(state, library);
+        var actions = findlegals(state, library);
+        var feasibles = findactions(library);
+        var mobility = actions.length / feasibles.length;
+        if (mover === role) {
+          return Math.round(mobility * 100);
+        } else {
+          return Math.round((1 - mobility) * 100);
+        }
+      }
+
+      //==============================================================================
+      // End of Minimax
+      //==============================================================================
+
+      function shuffle(array) {
+        for (var i = array.length - 1; i > 0; i--) {
+          var j = Math.floor(Math.random() * (i + 1));
+          var temp = array[i];
+          array[i] = array[j];
+          array[j] = temp;
+        }
+        return array;
+      }
+
+      function logStats(line) {
+        var box = document.getElementById("stats");
+        if (!box) return; // failsafe in case element missing
+        box.textContent += line + "\n";
+      }
+      //==============================================================================
+      // End of player code
+      //==============================================================================
+    </script>
+  </head>
+
+  <!--=======================================================================-->
+
+  <body bgcolor="#aabbbb" onload="doinitialize()">
+    <center>
+      <table width="720" cellspacing="0" cellpadding="40" bgcolor="#ffffff">
+        <tr>
+          <td>
+            <!--=======================================================================-->
+
+            <center>
+              <table width="640" cellpadding="0">
+                <tr>
+                  <td width="180" align="center" valign="center">
+                    <img
+                      width="130"
+                      src="http://gamemaster.stanford.edu/images/ggp.jpg"
+                    />
+                  </td>
+                  <td align="center">
+                    <span style="font-size: 18pt">&nbsp;</span>
+                    <span style="font-size: 32pt">Gamemaster</span><br />
+                  </td>
+                  <td
+                    width="180"
+                    align="center"
+                    style="color: #000066; font-size: 18px"
+                  >
+                    <i>General<br />Game<br />Playing</i>
+                  </td>
+                </tr>
+              </table>
+            </center>
+
+            <!--=======================================================================-->
+
+            <br />
+            <table
+              width="640"
+              cellpadding="8"
+              cellspacing="0"
+              bgcolor="#f4f8f8"
+              border="1"
+            >
+              <tr height="40">
+                <td align="center">
+                  <table style="color: #000066; font-size: 18px">
+                    <tr>
+                      <td>
+                        Protocol: localstorage<br />
+                        Metagamer: none<br />
+                        Strategy: Bigswitch between MCTS and Minimax with
+                        grounding, symbolizing, and pruning<br />
+                        Identifier: <span id="player">bombini_gusini</span>
+                        <img
+                          src="http://gamemaster.stanford.edu/images/pencil.gif"
+                          onclick="doplayer()"
+                        />
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <pre
+                          id="stats"
+                          style="
+                            margin-top: 12px;
+                            background: #eef;
+                            padding: 6px;
+                            font-family: courier;
+                            white-space: pre-wrap;
+                          "
+                        ></pre>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+            <br />
+
+            <!--=======================================================================-->
+
+            <center>
+              <br />
+              <textarea
+                id="transcript"
+                style="font-family: courier"
+                rows="30"
+                cols="80"
+                readonly
+              ></textarea>
+            </center>
+
+            <!--=======================================================================-->
+          </td>
+        </tr>
+      </table>
+    </center>
+  </body>
+
+  <!--=======================================================================-->
+</html>

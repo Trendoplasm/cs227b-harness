@@ -1,0 +1,90 @@
+<html>
+
+<!--=======================================================================-->
+
+<head>
+  <title>Greedy</title>
+  <script type='text/javascript' src='/vendor/epilog.js'></script>
+  <script type='text/javascript' src='/vendor/localstorage.js'></script>
+  <script type='text/javascript' src='/vendor/greedy.js'></script>
+  <script type='text/javascript' src='/vendor/general.js'></script>
+  <script type='text/javascript'>
+//==============================================================================
+// Customization
+//==============================================================================
+
+var manager = 'manager';
+var player = 'greedy';
+
+//==============================================================================
+// End of Customization
+//==============================================================================
+  </script>
+</head>
+
+<!--=======================================================================-->
+
+<body bgcolor='#aabbbb' onload='doinitialize()'>
+  <center>
+    <table width='720' cellspacing='0' cellpadding='40' bgcolor='#ffffff'>
+      <tr>
+        <td>
+
+<!--=======================================================================-->
+
+<center>
+  <table width='640' cellpadding='0'>
+    <tr>
+      <td width='180' align='center' valign='center'>
+        <img width='130' src='http://gamemaster.stanford.edu/images/ggp.jpg'/>
+      </td>
+      <td align='center'>
+        <span style='font-size:18pt'>&nbsp;</span>
+        <span style='font-size:32pt'>Gamemaster</span><br/>
+      </td>
+      <td width='180' align='center' style='color:#000066;font-size:18px'>
+        <i>General<br/>Game<br/>Playing</i>
+      </td>
+    </tr>
+  </table>
+</center>
+
+<!--=======================================================================-->
+
+<br/>
+<table width='640' cellpadding='8' cellspacing='0' bgcolor='#f4f8f8' border='1'>
+  <tr height='40'>
+     <td align='center'>
+<table style='color:#000066;font-size:18px'>
+  <tr>
+    <td>
+Protocol: localstorage<br/>
+Metagamer: none<br/>
+Strategy: greedy<br/>
+Identifier: <span id='player'>greedy</span> <img src="http://gamemaster.stanford.edu/images/pencil.gif" onclick='doplayer()'/>
+    </td>
+  </tr>
+</table>
+    </td>
+  </tr>
+</table>
+<br/>
+
+<!--=======================================================================-->
+
+<center>
+  <br/>
+  <textarea id='transcript' style='font-family:courier' rows='30' cols='80' readonly></textarea>
+</center>
+
+<!--=======================================================================-->
+
+        </td>
+      </tr>
+    </table>
+  </center>
+</body>
+
+<!--=======================================================================-->
+
+</html>

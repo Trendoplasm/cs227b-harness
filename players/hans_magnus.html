@@ -1,0 +1,500 @@
+<html>
+
+<!--=======================================================================-->
+
+ <!-- The player uses a customized Monte Carlo Tree Search algorithm, optimized for complex 
+  games but less suited for simpler, monotonic games. The algorithm changes its strategy based 
+  on how the game progresses and the opponent's actions through strategic node selection,
+  expansion, and simulation, which should enhance gameplay decisions vis-a-vis last week.
+
+  Key Functions of the Implementation:
+  1. select: The function balances exploration and exploitation using a modified Upper Confidence
+  Bound formula. It prioritizes nodes based on their summed utility and exploration value, 
+  considering less explored but potentially rewarding moves. This is ideal for games with complex 
+  decision trees and in line with the MCS Depth Tree Search laid out in class/in online forums.
+  To avoid running off the end of the tree, once the select function has fully expanded a leaf node,
+  it sets the visits to Infinity, and tells the process function to go onto the next iteraton.
+
+  2. depth_probe: This simulates game outcomes from the current node to a terminal state,
+  assessing expected end-game rewards. This method provides a basis for evaluating the 
+  strategic value of expanding specific paths in the game tree.
+
+  3. process: This executes one step of selection, expansion, and simulation. It adds a new node
+  for a previously unexplored move, simulates its outcome, and back-propagates the results to 
+  update parent nodes' utility scores. Like this, the calculation never times out (one node
+  processed at a time...) and ensures the strategy is continuously refined based on new 
+  information, one node at a time, with scores summed during back-propagation. The idea
+  is to add the score to all parent nodes. Given results are simply summed when back-
+  propagating, our selection criteria function divides the node.utility score by the number
+  of node.visits (in addition to taking into account breadth).
+
+  Summary of Key Strategic Points Behind Implementation Choices:
+      â€¢ High Exploration Constant: Emphasizes exploring diverse paths within the game tree, 
+      beneficial in multiplayer settings to identify optimal moves against various possible 
+      opponent strategies.
+      â€¢ Dynamic Adjustment to Opponents: Recalculates potential moves and outcomes in 
+      response to opponents' actions, allowing the player to adapt strategies mid-game 
+      effectively.
+      â€¢ Prior non-Monte Carlo Tree Search Approaches to Ensure Winning Moves: In the 
+      select_action function, scans for moves that will score 100 to guarantee that Monte 
+      Carlo Tree Search does not overlook winning opportunities. It also scans to prevent moves
+      which would allow the opponent to win in one move.
+      â€¢ Terminal tree considerations: If a node is a terminal state, or has children who are all
+      terminal, then it is itself terminal. These terminal states are minimaxed towards the end
+      of the tree
+  
+  Optimization strategies
+  Our model also optimizes the rules of the game during the start clock, removing rendundant rules
+  and simplifiying the existing ones. It also attmepts to ground within a set deadline, but returns
+  early if it fails, and resorts to using just the optimized rules. If it is able to ground the ruels,
+  then it symbolizes them as well. It addiionally prunes rules, so that the player can perform better
+  on "multiple" games with redundant branches. 
+  -->
+
+<head>
+  <title>hans_magnus</title>
+  <script type='text/javascript' src='/vendor/epilog.js'></script>
+  <script type='text/javascript' src='/vendor/localstorage.js'></script>
+  <script type='text/javascript' src='/vendor/general.js'></script>
+  <script src='/vendor/simplifier.js'></script>
+  <script src='/vendor/materializer.js'></script>
+  <script src='/vendor/optimizer.js'></script>
+  <script src='/vendor/grounder.js'></script>
+  <script src='/vendor/ground.js'></script>
+  <script src='/vendor/symbolizer.js'></script>
+  <script src='/vendor/symbol.js'></script>
+  <script src='/vendor/hybrid.js'></script>
+  <script src='/vendor/pruner.js'></script>
+  <script type='text/javascript'>
+
+    //==============================================================================
+    // hans_magnus_alpha_beta_prototype.js
+    //==============================================================================
+
+    var role = 'robot';
+    var player = 'hans_magnus'
+    var rules = [];
+    var startclock = 10;
+    var playclock = 10;
+
+    var library = [];
+    var roles = [];
+    var game_state = [];
+    var opponents = []
+
+    var tree;
+
+    var nodeCount = 0;
+    var depthCharges = 0;
+    var totalDepthChargeTime = 0;
+
+    //==============================================================================
+
+    function ping() {
+      return 'ready';
+    }
+
+    function start(r, rs, sc, pc) {
+
+      role = r;
+      rules = rs.slice(1);
+      startclock = numberize(sc);
+      playclock = numberize(pc);
+      var deadline = Date.now() + (startclock - 1) * 1000;
+
+      rules = prunerulesubgoals(rules);
+      rules = prunerules(rules);
+      rules = fixrules(rules);
+      rules = definemorerules([], rules);
+
+      var currtime = Date.now();
+      var grules = groundrules(rules, (deadline - currtime - 2000));
+      interpreter = 'general';
+      
+      if (grules) {
+        console.log("Grounded")
+      	rules = symbolizerules(grules)
+        interpreter = 'symbol';
+        rules = simplifyrules(rules);
+        rules = definemorerules([], rules);
+        rules = pruneprogram(role, rules);
+      }
+
+      library = definemorerules([], rules);
+      roles = findroles(library);
+      game_state = findinits(library);
+
+      tree = makenode(game_state, 0, null);
+ 
+      while (Date.now() < deadline) {
+        process(tree);
+      }
+
+      return 'ready';
+    }
+
+    function play(move) {
+      var deadline = Date.now() + (playclock - 1) * 1000;
+
+      if (interpreter == 'symbol') {
+        move = symbolizeatom(move);
+      }
+
+      if (move !== nil) {
+        game_state = simulate(move, game_state, library)
+        tree = subtree(move, tree);
+        if (!tree) {
+          tree = makenode(game_state, 0, null);
+        }
+      }
+      
+      if (findcontrol(game_state, library) !== role) {
+        return false;
+      }
+      
+      while (Date.now() < deadline && !tree.terminal) {
+        process(tree);
+      }
+      
+      console.log('Nodes:' + nodeCount);
+      console.log('Total Depth Charges:' + depthCharges);
+      console.log('Total Time for Depth Charges:' + totalDepthChargeTime);
+      console.log('Average Time per Depth Charge:' + (totalDepthChargeTime / depthCharges));
+
+      move = selectaction(tree);
+
+      if (interpreter == 'symbol') {
+        move = unsymbolizeatom(move);
+      }
+
+      updateDisplay(tree)
+      // console.log(structuredClone(tree));
+
+      return move;
+    }
+
+    function stop(move) {
+      return false;
+    }
+
+    function abort() {
+      return false;
+    }
+
+    //==============================================================================
+    // Monte Carlo Tree Search
+    //==============================================================================
+    
+    // Makes new node
+    function makenode(node_state, reward, parent) {
+      nodeCount++;
+
+      // There are no actions if we have a terminal state (prunes game-ended branches)
+      actions = findterminalp(node_state, library) ? [] : findlegals(node_state, library);
+      return {
+        state:    node_state,
+        terminal: false,
+        visits:   0,
+        actions:  actions,
+        children: [],
+        utility:  reward,
+        parent:   parent,
+      };
+    }
+
+    // Moves tree to child
+    function subtree(move, node) {
+      for (var i = 0; i < node.children.length; i++) {
+        if (equalp(move, node.actions[i])) {
+          node.children[i].parent = null;
+          return node.children[i];
+        }
+      }
+      return null;
+    }
+
+    // Selects the best action from a node
+    function selectaction(node) {
+      var action = false;
+      var score = - Infinity;
+
+      for (var i = 0; i < node.children.length; i++) {
+        if (findterminalp(node.children[i].state, library)) {
+          if (parseInt(findreward(role, node.children[i].state, library)) === 100) {
+            return node.actions[i];
+          }
+        }
+
+        var newscore = node.children[i].utility / node.children[i].visits;
+
+        if (findcontrol(node.children[i].state, library) !== role) {
+          for (var j = 0; j < node.children[i].actions.length; j++) {
+            var newstate = simulate(node.children[i].actions[j], node.children[i].state, library)
+            if (findterminalp(newstate, library)) {
+              if (parseInt(findreward(role, newstate, library)) === 0) {
+                var newscore = -Infinity;
+              }
+            }
+          }
+        }
+        
+        if (newscore > score) {
+          action = node.actions[i]; 
+          score = newscore;
+        }
+      }
+
+
+      return action;
+    }
+
+    // Select best node to expand
+    function select(node) {
+
+      // If not fully expanded, return this node
+      if (node.children.length < node.actions.length) {
+        return node;
+      }
+
+      // Search through children to find best option
+      score = -Infinity;
+      result = -1;
+      for (var i = 0; i < node.children.length; i++) {
+        var newscore = selectfn(node.children[i]);
+        if (newscore > score && !node.children[i].terminal) {
+          score = newscore;
+          result = node.children[i];
+        }
+      }
+
+      // Don't run off end of search tree
+      if (result === -1) {
+        determine_terminal(node);
+        return -1;
+      }
+
+      
+      return select(result)
+    }
+
+    // Evaluates the utilitiy of a node
+    function selectfn(node) {
+      selectfnConst = 50;
+      utility_value = node.utility/node.visits * (findcontrol(node.state, library) === role ? 1 : 1);
+      esploration_value = selectfnConst * Math.sqrt(2*Math.log(node.parent.visits)/node.visits);
+      return utility_value + esploration_value;
+    }
+
+    // Expands a node
+    function expand(node) {
+
+      move = node.actions[node.children.length]
+      
+      var newstate = simulate(move, node.state, library);
+      var newNode = makenode(newstate, 0, node);
+
+      node.children.push(newNode);
+
+      return newNode;
+    }
+    
+    // Radnomly simulate moves and then return terminal reward
+    function depth_probe(node) {
+      depthCharges++;
+      var startTime = Date.now();
+      currentState = node.state
+
+      while (!findterminalp(currentState, library)) {
+        actions = findlegals(currentState, library);
+        move = actions[Math.floor(Math.random() * actions.length)]
+        currentState = simulate(move, currentState, library)
+      }
+      var endTime = Date.now();
+      totalDepthChargeTime += (endTime - startTime);
+      return findreward(role, currentState, library)
+    }
+    
+    // Apply child node score to all parents
+    function backpropagate (node, score) {
+      node.visits += 1;
+      node.utility += score;
+      if (node.parent) {
+        backpropagate(node.parent, score);
+      }
+      return true;
+    }
+
+    // Do one select-expand-simulate step
+    function process(tree) { 
+      choice = select(tree);
+      if (choice === -1) {
+        return;
+      }
+      new_node = expand(choice);
+
+      var num_probes = 3;
+      var probe_average = 0;
+      for (var i = 0; i < num_probes; i++) {
+        probe_average += parseInt(depth_probe(new_node));
+      }
+      probe_average /= num_probes;
+      backpropagate(new_node, probe_average);
+    }
+
+    // Determine the value of a terminal node using minimax-like algorithm
+    function determine_terminal(node) {
+      node.terminal = true;
+      node.visits = 1;
+      if (findterminalp(node.state, library)) {
+        node.utility = parseInt(findreward(role, node.state, library));
+      } else {
+        if (findcontrol(node.state, library) === role) {
+          var max = 0;
+          for (var i = 0; i < node.children.length; i++) {
+            if (!node.children[i].terminal){
+              continue;
+            }
+            var newscore = node.children[i].utility;
+            if (newscore > max) {
+              max = newscore;
+            }
+          }
+          node.utility = max;
+        } else {
+          var min = 100;
+          for (var i = 0; i < node.children.length; i++) {
+            if (!node.children[i].terminal){
+              continue;
+            }
+            var newscore = node.children[i].utility;
+            if (newscore < min) {
+              min = newscore;
+            }
+          }
+          node.utility = min;
+        }
+      }
+
+      // Inverse Alpha-Beta pruning
+      if (node.utility === 0 && node.parent !== null && findcontrol(node.parent.state, library) !== role) {
+        determine_terminal(node.parent);
+      } else if (node.utility === 100 && node.parent !== null && findcontrol(node.parent.state, library) === role) {
+        determine_terminal(node.parent);
+      }
+    }
+
+    // function state_reward(state) {
+    //   var my_reward = parseInt(findreward(role, state, library));
+    //   var opponent_rewards = [];
+    //   for (var i = 0; i < roles.length; i++) {
+    //     if (roles[i] !== role) {
+    //       opponent_rewards.push(parseInt(findreward(role, state, library)))
+    //     }
+    //   }
+      
+    //   if (findterminalp(state, library)) {
+    //     for (var i = 0; i < opponent_rewards.length; i++) {
+    //       if (opponent_rewards[i] > my_reward) {
+    //         return 0;
+    //       }
+    //     }
+    //     return 100;
+    //   }
+
+    //   var opponent_average = 0;
+    //   for (var i = 0; i < opponent_rewards.length; i++) {
+    //     opponent_average += opponent_rewards[i]
+    //   }
+    //   opponent_average /= opponent_rewards.length;
+
+    //   return my_reward - 0.8 * opponent_average;
+
+    // }
+    
+    function updateDisplay(node) {
+      document.getElementById('currentUtilityDisplay').innerText = 'Win probability: ' + (node.utility / node.visits);
+      if (node.terminal) {
+        if (node.utility === 100) {
+          document.getElementById('terminalDisplay').innerText = 'We win!';
+        }
+        else {
+          document.getElementById('terminalDisplay').innerText = 'We lose :(';
+        }
+      } else {
+        document.getElementById('terminalDisplay').innerText = 'Tree not fully searched.';
+      }
+    }
+  </script>
+</head>
+
+<!--=======================================================================-->
+
+<body bgcolor='#aabbbb' onload='doinitialize()'>
+  <center>
+    <table width='720' cellspacing='0' cellpadding='40' bgcolor='#ffffff'>
+      <tr>
+        <td>
+
+<!--=======================================================================-->
+
+<center>
+  <table width='640' cellpadding='0'>
+    <tr>
+      <td width='180' align='center' valign='center'>
+        <img width='130' src='http://gamemaster.stanford.edu/images/ggp.jpg'/>
+      </td>
+      <td align='center'>
+        <span style='font-size:18pt'>&nbsp;</span>
+        <span style='font-size:32pt'>Gamemaster</span><br/>
+      </td>
+      <td width='180' align='center' style='color:#000066;font-size:18px'>
+        <i>General<br/>Game<br/>Playing</i>
+      </td>
+    </tr>
+  </table>
+</center>
+
+<!--=======================================================================-->
+
+<br/>
+<table width='640' cellpadding='8' cellspacing='0' bgcolor='#f4f8f8' border='1'>
+  <tr height='40'>
+     <td align='center'>
+<table style='color:#000066;font-size:18px'>
+  <tr>
+    <td>
+Protocol: localstorage<br/>
+Metagamer: none<br/>
+Strategy: eclectic<br/>
+Identifier: <span id='player'>hans_magnus</span> <img src="http://gamemaster.stanford.edu/images/pencil.gif" onclick='doplayer()'/>
+    </td>
+  </tr>
+</table>
+    </td>
+  </tr>
+</table>
+<br/>
+
+<center>
+  <div id='currentUtilityDisplay' style='font-size:18px; color:#000066;'>Wating for game start..</div>
+  <div id='terminalDisplay' style='font-size:18px; color:#000066;'>...</div>
+</center>
+
+<!--=======================================================================-->
+
+<center>
+  <br/>
+  <textarea id='transcript' style='font-family:courier' rows='30' cols='80' readonly></textarea>
+</center>
+
+<!--=======================================================================-->
+
+        </td>
+      </tr>
+    </table>
+  </center>
+</body>
+
+<!--=======================================================================-->
+
+</html>

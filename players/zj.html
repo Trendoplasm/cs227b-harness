@@ -1,0 +1,381 @@
+
+<!-- saved from url=(0054)http://ggp.stanford.edu/gamemaster/examples/legal.html -->
+<html><!--=======================================================================--><head><meta http-equiv="Content-Type" content="text/html; charset=windows-1252">
+  <title>zj</title>
+  <script type="text/javascript" src="/vendor/epilog.js"></script>
+  <script type="text/javascript" src="/vendor/localstorage.js"></script>
+
+  <script type="text/javascript" src="/vendor/hybrid.js"></script>
+
+  <script type="text/javascript" src="/vendor/optimizer.js"></script>
+  <script type="text/javascript" src="/vendor/materializer.js"></script>
+  <script type="text/javascript" src="/vendor/simplifier.js"></script>
+  <script type="text/javascript" src="/vendor/grounder.js"></script>
+  <script type="text/javascript" src="/vendor/symbolizer.js"></script>
+  <script type="text/javascript" src="/vendor/pruner.js"></script>
+
+
+  <script type="text/javascript">
+
+
+
+
+//==============================================================================
+// Player code goes here.
+//==============================================================================
+
+var manager = 'manager';
+var player = 'zj';
+
+var role = 'robot';
+var startclock = 10;
+var playclock = 10;
+
+var library = [];
+var roles = [];
+var move = 'nil';
+
+var globalstate;
+
+var NODES_VISITED = 0;
+var TERMS = 0;
+var SYMBOLIZESTATE = false;
+
+
+//==============================================================================
+
+function max(list, fn){
+  let start = Math.floor(Math.random()*list.length)
+  let cur = start;
+  let curfn = fn(list[cur]);
+  for(let i=0; i<list.length; i++){
+    let newfn = fn(list[i]);
+    if(newfn>curfn){
+      cur = i;
+      curfn = newfn;
+    }
+  }
+  return [list[cur], cur, curfn];
+}
+function min(list, fn){
+  let li = max(list, (a)=>-fn(a))
+  return [li[0], li[1], -li[2]];
+}
+
+let C = 50; //Exploration for greedy
+
+function Gnode(state) { //Greedy
+  this.state = state;
+  this.maxn = role === findcontrol(state, library);
+  this.terminal = findterminalp(state, library);
+
+  this.visits = 0.1;
+  let scores=roles.map((r)=>numberize(findreward(r,state,library)));
+  let scoreSum = scores.reduce((a,b)=>a+b);
+  this.eval = 1.5*scores[roles.indexOf(role)]-0.5*scoreSum+50; //HUR (Must always be >0)
+  this.done = this.terminal;
+}
+Gnode.prototype.selectfnh = function(child){ // ensure first fraction never negative!!!!!!! Or else sad times.
+  return (10+child.eval)/child.visits + C*Math.sqrt(Math.log(this.visits+1)/child.visits); //HUR
+}
+Gnode.prototype.selectfnl = function(child){
+  return (150-child.eval)/child.visits + C*Math.sqrt(Math.log(this.visits+1)/child.visits); //HUR (100-150)
+}
+Gnode.prototype.explore = function(){
+  this.moves = findlegals(this.state, library);
+  this.children = this.moves.map((item) => {
+    return new Gnode(simulate(item, this.state, library));
+  });
+}
+Gnode.prototype.update = function(recalc){
+  if(recalc){
+    this.done = true;
+    this.children.forEach((item, i) => {
+      this.done &&= item.done;
+    });
+  }
+  this.eval = (this.maxn? max:min)(this.children, (x)=>x.eval)[2];
+  return this.done;
+}
+Gnode.prototype.select = function(){
+  if(this.done) return;
+  let pr = this.children?.filter((x)=>!x.done);
+  if(!pr?.length>0){
+    this.done=true;
+    return;
+  }
+  return max(pr, this.maxn? this.selectfnh.bind(this) : this.selectfnl.bind(this))[0];
+}
+Gnode.prototype.process = function(deadline){
+  this.visits++;
+  if(this.done){
+    return true;
+  }
+  if(Date.now()>deadline){
+    return;
+  }
+  if(this.children === undefined) this.explore();
+  return this.update(this.select()?.process(deadline));
+}
+Gnode.prototype.step = function(move){
+  if(this.children === undefined) this.explore();
+  try {
+    return tree.children[tree.moves.map(JSON.stringify).indexOf(JSON.stringify(move))];
+  } catch {
+    console.error("Fatal error in stepping move");
+  }
+}
+Gnode.prototype.typeof = "Gnode";
+
+function Cnode(state, role) { //MCTS (both single and multiplayer)
+  this.state = state;
+  this.terminal = findterminalp(state, library);
+
+  this.visits = 0;
+  this.eval = 0;
+  this.role = role;
+  this.childrenrole = roles.indexOf(findcontrol(state,library));
+
+  if (this.terminal){
+    let scores=roles.map((r)=>numberize(findreward(r,state,library)));
+    let scoreSum = scores.reduce((a,b)=>a+b);
+    //stores terminal score of all players at node
+    this.scores = scores.map((x)=>1.5*x-0.5*scoreSum+50); //HUR (Must always be >0)
+  }
+
+  this.moves = findlegals(this.state, library);
+  this.children = new Array(this.moves.length);
+  this.uninit = this.moves.length;
+}
+Cnode.prototype.selectfn = function(child){ //HUR (constant is exploration)
+  return child.eval/child.visits+100*Math.sqrt(Math.log(this.visits)/child.visits);
+}
+Cnode.prototype.process = function(){
+  this.visits++;
+  if (this.terminal){
+    this.eval += this.scores[this.role];
+    return this.scores;
+  }
+  if(this.uninit > 0){
+    this.uninit--;
+    let ind = Math.floor(Math.random()*this.moves.length);
+    while(this.children[ind] !== undefined){
+      ind = (ind+1)%this.children.length;
+    }
+    this.children[ind] = new Cnode(simulate(this.moves[ind],this.state, library),this.childrenrole);
+    let v = this.children[ind].process();
+    this.eval+=v[this.role];
+    return v;
+  } else {
+    let v=max(this.children,this.selectfn.bind(this))[0].process();
+    this.eval+=v[this.role];
+    return v;
+  }
+}
+Cnode.prototype.step = function(move){
+  let i=0;
+  while(JSON.stringify(move) != JSON.stringify(this.moves[i])) i++;
+  if(this.children[i] === undefined){
+    return new Cnode(simulate(this.moves[i],this.state,library),this.childrenrole);
+  }
+  return this.children[i];
+}
+Cnode.prototype.typeof = "Cnode"
+
+let movefn = { // Need to store functions for generalization
+  "Gnode": (parentn)=>parentn.moves[max(parentn.children, (child)=>child.eval)[1]],
+  "Mnode": (parentn)=>max(parentn.children, (child)=>child[1].wins/child[1].visits)[0][0],   // Multiplayer MCST --> Now CNode
+  "Snode": (parentn)=>max(parentn.children, (child)=>child[1].points/child[1].visits)[0][0], // Singleplayer MCST --> Now CNode
+  "Cnode": (parentn)=>parentn.moves[max(parentn.children, (child)=>child.eval/child.visits)[1]]
+}
+
+let tree;
+
+function ping (){
+  return 'ready';
+}
+
+function start (r,rs,sc,pc) {
+  role = r;
+  rules = rs.slice(1)
+  startclock = numberize(sc);
+  playclock = numberize(pc);
+  let deadline = Date.now()+1000*(startclock-1);
+  NODES_VISITED = 0;
+  TERMS = 0;
+
+  rules = prunerulesubgoals(rules);
+  rules = prunerules(rules);
+  rules = fixrules(rules);
+
+  rules = definemorerules([], rules);
+  let halftime = startclock / 2 * 1000; // Do half of our startclock time always, so about 7.5 seconds typically
+  var newrules = groundrules(rules, halftime);
+  if (newrules) {  // Checks if an array or the value 'value'. If not, don't update rules and use standard ruleset
+    rules = symbolizerules(newrules);
+    interpreter = 'symbol';
+    SYMBOLIZESTATE = true;
+    rules = definemorerules([], rules);
+    rules = simplifyrules(rules);
+  } else {
+    interpreter = 'general';
+    SYMBOLIZESTATE = false;
+  }
+  console.log('interpreter: ', interpreter);
+
+  if (newrules) {
+    rules = definemorerules([], rules);
+    rules = pruneprogram(role, rules);
+  }
+
+  library = definemorerules([],rules);
+  roles = findroles(library);
+  globalstate = findinits(library);
+
+  if ((()=>{ /* Big Switch logical check for Greedy*/
+    let consecscore = 100; //cost yielded by many consecutive similar isv's
+    let endscore = 50;    //costs yielded by rapidly changing end isv's
+    for(let trials=0; trials<4; trials++){
+      let state=globalstate;
+      let isv=[roles.map((r)=>numberize(findreward(r,state,library)))];
+      while(!findterminalp(state,library)){
+        moves=findlegals(state,library);
+        state=simulate(moves[Math.floor(Math.random()*moves.length)],state,library);
+        isv.push(roles.map((r)=>numberize(findreward(r,state,library))))
+      }
+      let l=isv.length;
+      let current=roles.map((r)=>1);
+      let sq=(x)=>x*x;
+      for(let i=0; i<l-1; i++){
+        roles.forEach((r, j) => {
+          current[j] = isv[i][j]==isv[i+1][j]? current[j]+1 : 1;
+          endscore += Math.exp(i-l)*sq(isv[l-1][j]-isv[i][j])
+        });
+        consecscore += current.reduce((a,b)=>a+b)/l;
+      }
+    }
+    console.log(consecscore, endscore);
+    console.log(consecscore*endscore);
+    return consecscore*endscore<19000
+  })()) { 
+    tree = new Gnode(globalstate);
+    console.log("Using Greedy");
+    document.getElementById('strat').innerHTML = "Greedy";
+  } else {
+    tree = new Cnode(globalstate, 0);
+    console.log("Using MCTS");
+    document.getElementById('strat').innerHTML = "MCTS";
+  }
+
+  while(Date.now()<deadline) { // Head Start Processing
+    tree.process();
+  }
+  return 'ready';
+}
+
+function play (move) {
+  const deadline=Date.now()+1000*(playclock-1);
+  if (move!==nil){
+    if (SYMBOLIZESTATE) {
+      move = symbolizeatom(move);
+    }
+    globalstate = simulate(move,globalstate,library);
+    tree = tree.step(move);
+  }
+
+  if (findcontrol(globalstate,library)!==role)
+    return false;
+  let countchisel=0;
+  while(Date.now()<deadline && !tree.done){
+    tree.process(deadline)
+    countchisel++;
+  }
+  // console.log("did "+countchisel+" dives on this move");
+  // we could write this much more funnily i.e. (s? uns: ()=>)(mfn[t](tr))
+  // but I (Paul) was vetoed (by Butch) --> I stand my ground -Butch
+  return (SYMBOLIZESTATE ? unsymbolizeatom(movefn[tree.typeof](tree)) : movefn[tree.typeof](tree));
+}
+
+function stop (move) {
+  return false;
+}
+
+function abort (){
+  return false;
+}
+
+console.log("version FINAL");
+
+//==============================================================================
+// End of player code
+//==============================================================================
+  </script>
+</head>
+
+<!--=======================================================================-->
+
+<body bgcolor="#aabbbb" onload="doinitialize()">
+  <center>
+    <table width="720" cellspacing="0" cellpadding="40" bgcolor="#ffffff">
+      <tbody><tr>
+        <td>
+
+<!--=======================================================================-->
+
+<center>
+  <table width="640" cellpadding="0">
+    <tbody><tr>
+      <td width="180" align="center" valign="center">
+        <img width="130" src=https://www.yearroundhomeschooling.com/wp-content/uploads/2014/12/Zaijian.png>
+      </td>
+      <td align="center">
+        <span style="font-size:18pt">&nbsp;</span>
+        <span style="font-size:32pt">Gamemaster</span><br>
+      </td>
+      <td width="180" align="center" style="color:#000066;font-size:18px">
+        <i>General<br>Game<br>Playing</i>
+      </td>
+    </tr>
+  </tbody></table>
+</center>
+
+<!--=======================================================================-->
+
+<br>
+<table width="640" cellpadding="8" cellspacing="0" bgcolor="#f4f8f8" border="1">
+  <tbody><tr height="40">
+     <td align="center">
+<table style="color:#000066;font-size:18px">
+  <tbody><tr>
+    <td>
+Protocol: localstorage<br>
+Metagamer: Optimizer + Symbolizer + Pruner + Big Switch + Head Start<br>
+Strategy: <div id="strat">Greedy or MCTS Who Knows?? </div><br>
+Identifier: <span id="player">zj</span> <img src="../images/pencil.gif" onclick="doplayer()">
+    </td>
+  </tr>
+</tbody></table>
+    </td>
+  </tr>
+</tbody></table>
+<br>
+
+<!--=======================================================================-->
+
+<center>
+  <br>
+  <textarea id="transcript" style="font-family:courier" rows="30" cols="80" readonly=""></textarea>
+</center>
+
+<!--=======================================================================-->
+
+        </td>
+      </tr>
+    </tbody></table>
+  </center>
+
+
+
+
+
+</body><!--=======================================================================--></html>

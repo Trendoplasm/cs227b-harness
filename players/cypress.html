@@ -1,0 +1,465 @@
+<html>
+
+<head>
+  <title>cypress</title>
+  <script type="text/javascript" src="/vendor/epilog.js"></script>
+  <script type="text/javascript" src="/vendor/localstorage.js"></script>
+  <script type="text/javascript" src='/vendor/grounder.js'></script>
+  <script type="text/javascript" src='/vendor/symbolizer.js'></script>
+  <script type='text/javascript' src="/vendor/simplifier.js"></script>
+  <script type="text/javascript" src="/vendor/hybrid.js"></script>
+  <script type='text/javascript' src="/vendor/optimizer.js"></script>
+  <script type="text/javascript" src="/vendor/pruner.js"></script>
+  <script type="text/javascript">
+
+// What we did : Cypress MCTS player with headstart and bigswitch implementation, wherein we first decide
+// between iterative deepening and MCTS in the start function, and if we choose MCTS, we take a headstart
+// and process the tree also. We noticed that our MCTS player is playing okayish all games except skirmish
+// (connect4, alquerque, hamilton, hunter) against onestep. We also know that our iterative deepening player was 
+// better than the MCTS agent at skirmish (i.e. large branching factor game). This is why we decided to use bigswitch
+// between Iterative Deepening player and the MCTS player in the start.We have also included 'conditional' grounding
+// with symbolization using the hybrid.js interpretter so that we get better performance. Finally, we have also added pruning
+// to the player as we noticed it performed very well on the multiplebuttonsandlight. The comaparison chart we got
+// is as follows
+
+/**
+ * Performance comparison of player variants across multiplebuttonsandlights
+ *   • Normal player – no pruning
+ *       - Strategy choice: Iterative Deepening  
+ *       – Final Score of Game: 50/100
+ *   • Grounding + Symbolizing + pruning
+ *       – Strategy choice: MCTS
+ *       – No of depth charges: 52893891
+ *       – Final Score of Game: 100/100
+ */
+
+var manager = 'manager';
+var player  = 'cypress';
+
+var role, rules, startclock, playclock;
+var library, roles, state, tree, strategy, newrules, ground;
+
+// UCT constants and timers
+var _uctStartTime;
+var _uctC0        = Math.sqrt(2);
+var _uctCbranch;
+var _uctCvar;
+var dep_count =0;
+var node_count =1;
+
+// helper: Fisher–Yates shuffle
+function shuffle(array) {
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [array[i], array[j]] = [array[j], array[i]];
+  }
+  return array;
+}
+
+function randomIndex(n) {
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error("randomIndex: n must be a positive integer");
+  }
+  return Math.floor(Math.random() * n);
+}
+
+//evaluation functions:
+// 1. Implement a pessimistic evaluation function, i.e. one that returns the actual reward on terminal states 
+//    and returns 0 for all other states. (Very easy.)
+
+function eval_pessimist(state){
+  if (findterminalp(state,library)){
+    return findreward(role,state,library)*1
+  }
+  else {return 0;}
+}
+
+// 2. Implement a mobility function. For states, when your player is in control, the function 
+// should return a high score for states in which your player has many moves and a low score 
+// for states in which it has few moves. For states in which you player is not in control, 
+// it should return a high score for states in which the player in control has few moves and a 
+// low score for states in which it has many moves
+function mobility(state){
+  var actions = findlegals(state,library);
+  var feasibles = findactions(library);
+  var active = findcontrol(state,library);
+  if (role == active) {return (actions.length/feasibles.length * 10);}
+  else {return (10- actions.length/feasibles.length * 10);}
+}
+
+// Implement an intermediate reward function, i.e. one that returns the actual reward associated with 
+// that state, whether or not it is terminal. (Very easy.)
+function intermediate_rew(state){
+  return findreward(role, state, library)*1;}
+
+// Node constructor
+function makeNode(state_, mover, reward) {
+  return {
+    state: state_,
+    actions: [],
+    children: [],
+    mover: mover,
+    total_rew: reward,
+    visits: 1,
+    utility: reward
+  };
+}
+
+function chooseStrategy(state) {
+  var b = findlegals(state, rules).length;
+    if (b > 10) {return 'id';}
+  return 'mcts'; 
+}
+
+// UCT constant, decayed over time
+function getCurrentC() {
+  var elapsed = (Date.now() - _uctStartTime) / 1000;
+  var frac    = Math.max(0, (playclock - elapsed) / playclock);
+  var decay   = _uctC0 * frac;
+  return (decay + _uctCbranch + _uctCvar) / 3;
+}
+
+// GGP protocol hooks
+function ping() {
+  return 'ready';
+}
+
+function start(r, rs, sc, pc) {
+  role       = r;
+  rules      = rs.slice(1);
+  startclock = parseInt(sc, 10);
+  playclock  = parseInt(pc, 10);
+
+  rules = prunerulesubgoals(rules);
+  rules = prunerules(rules);
+  rules = fixrules(rules);
+
+  var deadline = Date.now() + startclock * 1000;
+  library    = definemorerules([], rules);
+  newrules = groundrules(library, (startclock - 1)*1000);
+  if(newrules !== false) { ground = true;}
+  else {ground = false;};
+  
+  if (ground){
+    library    = definemorerules([], newrules);
+    library    = symbolizerules(library);
+    library    = definemorerules([], library);
+    library = simplifyrules(library);
+    library    = definemorerules([], library);
+    library = pruneprogram(role, library);
+    library = definemorerules([],library);
+    interpreter = 'symbol';
+    }
+    else {interpreter = 'general';};
+   console.log("Interpreter is:", interpreter);
+ 
+  roles      = findroles(library);
+  state      = findinits(library);
+  strategy = chooseStrategy(state);
+  console.log("Strategy is:", strategy);
+//   strategy = 'id';
+
+  if (strategy == 'id') return 'ready';  
+  // Initialize root node
+  var initReward = parseInt(findreward(role, state, library), 10);
+  tree = makeNode(state, findcontrol(state, library), initReward);
+
+  // 1) Timing for UCT decay
+  _uctStartTime = Date.now();
+  _uctC0        = Math.sqrt(2);
+
+  // 2) Branching factor estimate
+  var B = Math.max(1, findlegals(state, library).length);
+  _uctCbranch = Math.sqrt(2 * Math.log(B + 1) / B);
+
+  // 3) Rollout-variance estimate
+  var samples = [];
+  var trials  = Math.min(5, B);
+  var moves   = findlegals(state, library);
+  for (var i = 0; i < trials; i++) {
+   var s;
+   s = simulate(moves[i], state, library);
+   samples.push(depthcharge(s));
+  }
+  var mu = samples.reduce((a, b) => a + b, 0) / samples.length;
+  var sigma = Math.sqrt(
+    samples.reduce((a, v) => a + (v - mu) * (v - mu), 0) / samples.length
+  );
+  _uctCvar = sigma * Math.sqrt(2);
+
+  // Main iteration loop
+  
+  while (Date.now() < deadline) {
+    runIteration(tree);
+  }
+  return 'ready';
+}
+
+function play(move) {
+    
+  // if(rules_ground!== false) {move = symbolizeatom(move);}
+  // move = symbolizeatom(move);
+  if(strategy == 'id'){ 
+    if (move!== null) { 
+        if(ground) {state = simulate(symbolizeatom(move),state,library);}
+        else {state = simulate(move,state,library);}
+        // state = simulate(move,state,library);
+    };
+    if (findcontrol(state,library)!==role) {return false};
+    // return playminimaxid(state);}
+    if(ground) {return unsymbolizeatom(playminimaxid(state));}
+    else {return playminimaxid(state);}}  
+    
+    else {
+    _uctStartTime = Date.now();
+    if (move !== null) {
+        if (ground) {tree = selectChildByMove(tree, symbolizeatom(move));}
+        else {tree = selectChildByMove(tree, move);}
+        state = tree.state;
+    } 
+    if (findcontrol(state, library) !== role) {
+        return false;
+    }
+    var deadline_local = Date.now() + (playclock - 0.8) * 1000;
+    console.log("Calling iteration!");
+    while (Date.now() < deadline_local) {
+        runIteration(tree);
+    }
+    console.log("depthcharges till now:", dep_count);
+    console.log("Iteration Done!");
+    // x = selectBestAction(tree);
+    // console.log("",x);
+    // console.log("SelectBestAction done!");
+    // return unsymbolizeatom(x);}
+    if(ground) {return unsymbolizeatom(selectBestAction(tree));}
+    else {return selectBestAction(tree);}}
+
+}
+
+function stop(move) {
+  console.log("No. of depthcharges =", dep_count);
+  console.log("No. of nodes visited =", node_count);
+  return null;
+}
+
+function abort() {
+  return null;
+}
+
+// Single MCTS iteration: selection, expansion, simulation, backprop
+function runIteration(node) {
+  // 1) Selection down to leaf
+  var leaf = node;
+  var path = [leaf];
+  while (leaf.children.length > 0 && !findterminalp(leaf.state, library)) {
+    leaf = selectChildUCT(leaf);
+    path.push(leaf);
+  }
+
+  // 2) Expansion
+  if (!findterminalp(leaf.state, library)) {
+    expandNode(leaf);
+    leaf = selectChildUCT(leaf);
+    path.push(leaf);
+  }
+  var reward;
+  if(ground){
+    reward= depthcharge(leaf.state);
+    // console.log("Depthcharge finished!");
+}
+  else {
+    // dataindexing = true;
+    var copy = definemorefacts([],leaf.state);
+    reward = depthcharge(copy);
+    // console.log("Doing depthcharge!");
+  // var reward = depthcharge(leaf.state);
+    // dataindexing = false;
+  }
+  dep_count = dep_count +1;
+  // 3) Simulation
+  // var reward = depthcharge(leaf.state);
+
+  // 4) Backpropagation
+  for (var n of path) {
+    n.visits += 1;
+    n.total_rew += reward;
+    n.utility = n.total_rew / n.visits;
+  }
+}
+
+// UCT selection among children
+function selectChildUCT(node) {
+  var best = node.children[0];
+  var bestScore = uctValue(best, node.visits);
+  for (var i = 1; i < node.children.length; i++) {
+    var c = node.children[i];
+    var score = uctValue(c, node.visits);
+    if (score > bestScore) {
+      best = c;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function uctValue(child, parentVisits) {
+  var exploit = child.utility;
+  var explore = getCurrentC() * Math.sqrt(Math.log(parentVisits) / child.visits);
+  return exploit + explore;
+}
+
+// Expand leaf by adding all legal moves
+function expandNode(node) {
+  var moves = findlegals(node.state, library);
+  node.actions = moves;
+  for (var m of moves) {
+    var newState = simulate(m , node.state, library);
+    var mover    = findcontrol(newState, library);
+    var r        = parseInt(findreward(role, newState, library), 10);
+    node.children.push(makeNode(newState, mover, r));
+    node_count = node_count +1;
+  }
+}
+
+// Simulation: random playout
+function depthcharge(s) {
+//   return 0;
+  if (findterminalp(s, library)) {
+    return parseInt(findreward(role, s, library), 10);
+  }
+  var moves = findlegals(s, library);
+  if (moves.length === 0) {
+    return 0;
+  }
+  var choice = randomIndex(moves.length);
+  var nextstate = simulate(moves[choice], s, library);
+
+  return depthcharge(nextstate);
+}
+
+// Helpers to select child by explicit move and pick best action after MCTS
+function selectChildByMove(node, move) {
+  for (var i = 0; i < node.actions.length; i++) {
+    if (equalp(move, node.actions[i])) {
+      return node.children[i];
+    }
+  }
+  return node; // fallback
+}
+
+function selectBestAction(node) {
+  var bestIdx = 0;
+  var bestVisits = 0
+  for (var i = 0; i < node.children.length; i++) {
+    if (!oneturnloss(node.children[i].state)){
+    if (node.children[i].visits > bestVisits) {
+      bestVisits = node.children[i].visits;
+      bestIdx = i;
+    }
+  }
+  }
+  return node.actions[bestIdx];
+}
+
+//ID code:
+function playminimaxid(state)
+{   var deadline = Date.now()+(playclock-1)*1000;
+    var best = findlegalx(state,library);
+    for (var depth=1; depth<=10; depth++)
+    {var action = playminimaxidinner(state,depth,deadline);
+    if (action===false) {return best};
+    best = action};
+    return best}
+
+
+function playminimaxidinner (state, depth, deadline)
+{   var actions = shuffle(findlegals(state,library));
+    var action = actions[0];
+    var score = 0;
+    for (var i=0; i<actions.length; i++)
+    {   var newstate = simulate(actions[i],state,library);
+        var newscore = minimaxid(newstate, depth, deadline);
+        if (newscore == -1){return false};
+        if (newscore>score) {score = newscore; action = actions[i]}
+        if (score == 100) {return action};
+    };
+    return action;}
+    
+function minimaxid (state, depth, deadline)
+{   if (findterminalp(state,library))
+        {return findreward(role,state,library)*1};
+    if(depth <=0){
+        if (intermediate_rew(state) == 0){return mobility(state)};   
+        return intermediate_rew(state);
+    }
+    if(Date.now()>deadline) {return -1};
+    var active = findcontrol(state,library);
+    if (active===role) {return maximizeid(state, depth -1, deadline);};
+    return minimizeid(state, depth -1, deadline);}
+
+function maximizeid (state, depth, deadline)
+{   var actions = shuffle(findlegals(state,library));
+    if (actions.length===0) {return 0};
+    var score = 0;
+    for (var i=0; i<actions.length; i++)
+    {   var newstate = simulate(actions[i],state,library);;
+        var newscore = minimaxid(newstate, depth, deadline);
+        if (newscore===-1) {return -1};
+        if (newscore>score) {score = newscore};
+        if(score == 100) {return score};}
+    return score}
+
+function minimizeid (state, depth, deadline)
+{   var actions = shuffle(findlegals(state,library));
+    if (actions.length===0) {return 0};
+    var score = 100;
+    for (var i=0; i<actions.length; i++)
+    {   var newstate=  simulate(actions[i],state,library);
+        var newscore = minimaxid(newstate, depth, deadline);
+        if (newscore === -1) {return -1};
+        if (newscore<score) {score = newscore};
+        if(score == 0) {return score};};
+    return score}
+
+function oneturnloss (state){
+  var actions = shuffle(findlegals(state,library));
+    if (actions.length===0) {return false};
+    for (var i=0; i<actions.length; i++)
+    {var newstate = simulate(actions[i],state,library);
+      if (findterminalp(newstate,library)){
+        if (findreward(role,newstate,library)*1 === 0){return true}
+      } 
+    }
+    return false;
+}
+</script>
+</head>
+
+<body bgcolor='#aabbbb' onload='doinitialize()'>
+  <center>
+    <table width='720' cellspacing='0' cellpadding='40' bgcolor='#ffffff'>
+      <tr><td>
+        <center>
+          <table width='640'><tr>
+            <td width='180' align='center'><img width='130' src='http://gamemaster.stanford.edu/images/ggp.jpg'/></td>
+            <td align='center'><span style='font-size:32pt'>Gamemaster</span></td>
+            <td width='180' align='center'><i>General<br/>Game<br/>Playing</i></td>
+          </tr></table>
+        </center>
+        <br/>
+        <table width='640' cellpadding='8' bgcolor='#f4f8f8' border='1'>
+          <tr><td align='center' style='color:#000066;font-size:18px'>
+            Protocol: localstorage<br/>
+            Metagamer: none<br/>
+            Strategy: custom<br/>
+            Identifier: <span id='player'>cypress</span> <img src='http://gamemaster.stanford.edu/images/pencil.gif' onclick='doplayer()'/>
+          </td></tr>
+        </table>
+        <br/>
+        <textarea id='transcript' style='font-family:courier' rows='30' cols='80' readonly></textarea>
+      </td></tr>
+    </table>
+  </center>
+</body>
+
+</html>

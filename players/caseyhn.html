@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>caseyhn</title>
+    <script
+      type="text/javascript"
+      src="/vendor/epilog.js"
+    ></script>
+    <script
+      type="text/javascript"
+      src="/vendor/localstorage.js"
+    ></script>
+    <script
+      type="text/javascript"
+      src="/vendor/hybrid.js"
+    ></script>
+    <script
+      type="text/javascript"
+      src="/vendor/grounder.js"
+    ></script>
+    <script
+      type="text/javascript"
+      src="/vendor/symbolizer.js"
+    ></script>
+    <script
+      type="text/javascript"
+      src="/vendor/simplifier.js"
+    ></script>
+    <script
+      type="text/javascript"
+      src="/vendor/pruner.js"
+    ></script>
+    <script
+      type="text/javascript"
+      src="/vendor/optimizer.js"
+    ></script>
+
+    <script type="text/javascript">
+      var manager = "manager";
+      var player = "caseyhn";
+
+      var role, rules, startclock, playclock;
+      var library, roles, state, tree;
+
+      var grounded = false;
+      var intermediate = false;
+      var EXPLORATION_C = 1.4;
+      var initReward = 0;
+      var count = 0;
+      var relevantActions = [];
+
+      // Set interpreter mode
+      interpreter = "general";
+
+      function ping() {
+        console.log("Ping received");
+        return "ready";
+      }
+
+      function start(r, rs, sc, pc) {
+        console.log("Start called with role:", r);
+        try {
+          role = r;
+          startclock = parseInt(sc, 10);
+          playclock = parseInt(pc, 10);
+          var deadline = Date.now() + (startclock - 2) * 1000;
+
+          // Process rules with full optimization pipeline
+          rules = rs.slice(1);
+          rules = prunerulesubgoals(rules);
+          rules = prunerules(rules);
+          rules = fixrules(rules);
+          rules = definemorerules([], rules);
+
+          // Try to ground rules
+          var rules_grounded = groundrules(rules, (startclock / 2) * 1000);
+          if (rules_grounded) {
+            grounded = true;
+            console.log("Rules grounded successfully");
+
+            // Symbolize
+            rules = symbolizerules(rules_grounded);
+            console.log("Rules symbolized");
+
+            // Simplify
+            rules = simplifyrules(rules);
+            console.log("Rules simplified");
+
+            // Define and prune
+            rules = definemorerules([], rules);
+            rules = pruneprogram(role, rules);
+            relevantActions = pruneactions(role, rules);
+            console.log(
+              "Rules pruned, relevant actions:",
+              relevantActions.length
+            );
+
+            // Switch to symbol interpreter for grounded games
+            interpreter = "symbol";
+          } else {
+            grounded = false;
+            console.log("Grounding failed, using general interpreter");
+          }
+
+          library = definemorerules([], rules);
+          roles = findroles(library);
+          state = findinits(library);
+
+          // Initialize reward
+          initReward = parseInt(findreward(role, state, library), 10);
+
+          // Detect intermediate state values
+          var probeDeadline =
+            Date.now() + Math.floor(startclock / 2 - 1) * 1000;
+          intermediate = detectIntermediate(
+            state,
+            library,
+            role,
+            probeDeadline
+          );
+
+          if (intermediate) {
+            console.log("Intermediate state values detected - using PTS");
+          } else {
+            console.log("No intermediate values - using MCTS");
+          }
+
+          // Initialize tree
+          tree = makenode(state, findcontrol(state, library), initReward, null);
+
+          // Headstart computation
+          count = 0;
+          while (Date.now() < deadline) {
+            if (intermediate) {
+              processPTS(tree);
+            } else {
+              processMCTS(tree, deadline);
+            }
+          }
+
+          console.log("Start complete. Count:", count);
+          return "ready";
+        } catch (e) {
+          console.error("Error in start:", e);
+          // Minimal initialization to prevent complete failure
+          try {
+            library = definemorerules([], rs.slice(1));
+            state = findinits(library);
+            tree = makenode(state, role, 0, null);
+          } catch (e2) {
+            console.error("Critical error:", e2);
+          }
+          return "ready";
+        }
+      }
+
+      function play(move) {
+        try {
+          if (grounded) move = symbolizeatom(move);
+
+          if (move !== nil) {
+            state = simulate(move, state, library);
+            tree = intermediate
+              ? subtreePTS(move, tree)
+              : subtreeMCTS(move, tree);
+            state = tree.state;
+          }
+
+          if (findcontrol(state, library) !== role) return nil;
+
+          var selectedMove = intermediate ? playPTS() : playMCTS();
+          if (grounded) selectedMove = unsymbolizeatom(selectedMove);
+
+          console.log("Playing move:", selectedMove, "Count:", count);
+          return selectedMove;
+        } catch (e) {
+          console.error("Error in play:", e);
+          return nil;
+        }
+      }
+
+      function stop(move) {
+        return false;
+      }
+
+      function abort() {
+        return false;
+      }
+
+      // Detect intermediate state values
+      function detectIntermediate(root, library, role, deadline, probes = 10) {
+        for (var probe = 0; probe < probes; probe++) {
+          if (Date.now() >= deadline) break;
+
+          var nextstate = root.slice ? root.slice(0) : Object.assign({}, root);
+          var terminal = false;
+          var depth = 0;
+
+          while (!terminal && depth < 100) {
+            if (findterminalp(nextstate, library)) {
+              terminal = true;
+              break;
+            }
+
+            var legals = findlegals(nextstate, library);
+            if (legals.length === 0) break;
+
+            var idx = Math.floor(Math.random() * legals.length);
+            nextstate = simulate(legals[idx], nextstate, library);
+
+            // Check for intermediate rewards
+            var reward = parseInt(findreward(role, nextstate, library), 10);
+            if (reward !== 0 && reward !== 100 && reward !== initReward) {
+              return true;
+            }
+
+            depth++;
+          }
+        }
+        return false;
+      }
+
+      function makenode(state, mover, utility, parent) {
+        return {
+          state: state,
+          actions: [],
+          children: [],
+          mover: mover,
+          utility: utility,
+          visits: 0,
+          scores: 0,
+          parent: parent,
+        };
+      }
+
+      // PTS Implementation
+      function playPTS() {
+        var deadline = Date.now() + (playclock - 2) * 1000;
+        while (Date.now() < deadline) {
+          processPTS(tree);
+        }
+        return selectBestAction(tree);
+      }
+
+      function processPTS(node) {
+        if (findterminalp(node.state, library)) return true;
+
+        if (node.children.length === 0) {
+          expandNode(node);
+        } else {
+          processPTS(selectPTS(node));
+        }
+
+        updatePTS(node);
+        return true;
+      }
+
+      function expandNode(node) {
+        var acts = findlegals(node.state, library);
+
+        // Apply relevance filtering
+        if (relevantActions.length > 0 && roles.length === 1) {
+          var filteredActs = acts.filter((a) =>
+            relevantActions.some((ra) => equalp(a, ra))
+          );
+          if (filteredActs.length > 0) acts = filteredActs;
+        }
+
+        node.actions = acts;
+        for (var i = 0; i < acts.length; i++) {
+          var newstate = simulate(acts[i], node.state, library);
+          var newmover = findcontrol(newstate, library);
+          var newscore = parseInt(findreward(role, newstate, library), 10);
+          node.children[i] = makenode(newstate, newmover, newscore, node);
+        }
+        count++;
+      }
+
+      function selectPTS(node) {
+        var bestChild = node.children[0];
+        var bestScore = -Infinity;
+
+        for (var i = 0; i < node.children.length; i++) {
+          var child = node.children[i];
+          var score =
+            child.utility +
+            Math.round((1 - child.visits / (node.visits + 1)) * 100);
+          if (score > bestScore) {
+            bestScore = score;
+            bestChild = child;
+          }
+        }
+        return bestChild;
+      }
+
+      function updatePTS(node) {
+        if (node.children.length === 0) return;
+
+        if (node.mover === role) {
+          node.utility = Math.max(...node.children.map((c) => c.utility));
+        } else {
+          node.utility = Math.min(...node.children.map((c) => c.utility));
+        }
+        node.visits++;
+      }
+
+      function selectBestAction(node) {
+        var bestIdx = 0;
+        var bestUtility = -Infinity;
+
+        for (var i = 0; i < node.children.length; i++) {
+          if (node.children[i].utility > bestUtility) {
+            bestUtility = node.children[i].utility;
+            bestIdx = i;
+          }
+        }
+        return node.actions[bestIdx];
+      }
+
+      function subtreePTS(move, node) {
+        if (node.children.length === 0) expandNode(node);
+
+        for (var i = 0; i < node.actions.length; i++) {
+          if (equalp(move, node.actions[i])) {
+            node.children[i].parent = null;
+            return node.children[i];
+          }
+        }
+
+        // Create new node if move not found
+        var newstate = simulate(move, node.state, library);
+        return makenode(
+          newstate,
+          findcontrol(newstate, library),
+          parseInt(findreward(role, newstate, library), 10),
+          null
+        );
+      }
+
+      // MCTS Implementation
+      function playMCTS() {
+        var deadline = Date.now() + (playclock - 2) * 1000;
+
+        var acts = findlegals(state, library);
+        if (acts.length === 0) return nil;
+        if (acts.length === 1) return acts[0];
+
+        while (Date.now() < deadline) {
+          processMCTS(tree, deadline);
+        }
+
+        return selectBestActionMCTS(tree);
+      }
+
+      function processMCTS(node, deadline) {
+        if (Date.now() >= deadline) return;
+
+        var current = node;
+        var path = [current];
+
+        // Selection
+        while (current.children.length > 0 && current.visits > 0) {
+          current = selectUCT(current);
+          path.push(current);
+        }
+
+        // Expansion
+        if (!findterminalp(current.state, library) && current.visits > 0) {
+          expandNode(current);
+          if (current.children.length > 0) {
+            current =
+              current.children[
+                Math.floor(Math.random() * current.children.length)
+              ];
+            path.push(current);
+          }
+        }
+
+        // Simulation
+        var reward = rollout(current.state, deadline);
+
+        // Backpropagation
+        for (var i = path.length - 1; i >= 0; i--) {
+          path[i].visits++;
+          path[i].scores += reward;
+        }
+      }
+
+      function selectUCT(node) {
+        var bestChild = null;
+        var bestScore = -Infinity;
+        var parentVisits = Math.log(node.visits + 1);
+
+        for (var i = 0; i < node.children.length; i++) {
+          var child = node.children[i];
+
+          if (child.visits === 0) return child;
+
+          var exploitation = child.scores / child.visits;
+          var exploration =
+            EXPLORATION_C * Math.sqrt(parentVisits / child.visits);
+          var score = exploitation + exploration;
+
+          if (score > bestScore) {
+            bestScore = score;
+            bestChild = child;
+          }
+        }
+
+        return bestChild || node.children[0];
+      }
+
+      function rollout(startState, deadline) {
+        var s = startState.slice
+          ? startState.slice(0)
+          : Object.assign({}, startState);
+        var depth = 0;
+
+        while (
+          !findterminalp(s, library) &&
+          Date.now() < deadline &&
+          depth < 100
+        ) {
+          var acts = findlegals(s, library);
+          if (acts.length === 0) break;
+
+          // Biased action selection for better rollouts
+          var selectedAction;
+          if (
+            Math.random() < 0.9 &&
+            relevantActions.length > 0 &&
+            roles.length === 1
+          ) {
+            var relevantActs = acts.filter((a) =>
+              relevantActions.some((ra) => equalp(a, ra))
+            );
+            if (relevantActs.length > 0) {
+              selectedAction =
+                relevantActs[Math.floor(Math.random() * relevantActs.length)];
+            } else {
+              selectedAction = acts[Math.floor(Math.random() * acts.length)];
+            }
+          } else {
+            selectedAction = acts[Math.floor(Math.random() * acts.length)];
+          }
+
+          s = simulate(selectedAction, s, library);
+          depth++;
+        }
+
+        count++;
+        return parseInt(findreward(role, s, library), 10);
+      }
+
+      function selectBestActionMCTS(node) {
+        var bestChild = null;
+        var bestAverage = -Infinity;
+        var bestIdx = 0;
+
+        for (var i = 0; i < node.children.length; i++) {
+          var child = node.children[i];
+          if (child.visits > 0) {
+            var average = child.scores / child.visits;
+            if (average > bestAverage) {
+              bestAverage = average;
+              bestChild = child;
+              bestIdx = i;
+            }
+          }
+        }
+
+        return node.actions[bestIdx];
+      }
+
+      function subtreeMCTS(move, node) {
+        for (var i = 0; i < node.actions.length; i++) {
+          if (equalp(move, node.actions[i])) {
+            node.children[i].parent = null;
+            return node.children[i];
+          }
+        }
+
+        // Create new node if move not found
+        var newstate = simulate(move, node.state, library);
+        return makenode(newstate, findcontrol(newstate, library), 0, null);
+      }
+    </script>
+  </head>
+
+  <body bgcolor="#aabbbb" onload="doinitialize()">
+    <center>
+      <table width="720" cellspacing="0" cellpadding="40" bgcolor="#ffffff">
+        <tbody>
+          <tr>
+            <td>
+              <center>
+                <table width="640" cellpadding="0">
+                  <tbody>
+                    <tr>
+                      <td width="180" align="center" valign="center">
+                        <img
+                          width="130"
+                          src="http://gamemaster.stanford.edu/images/ggp.jpg"
+                        />
+                      </td>
+                      <td align="center">
+                        <span style="font-size: 18pt">&nbsp;</span>
+                        <span style="font-size: 32pt">Gamemaster</span><br />
+                      </td>
+                      <td
+                        width="180"
+                        align="center"
+                        style="color: #000066; font-size: 18px"
+                      >
+                        <i>General<br />Game<br />Playing</i>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </center>
+              <br />
+              <table
+                width="640"
+                cellpadding="8"
+                cellspacing="0"
+                bgcolor="#f4f8f8"
+                border="1"
+              >
+                <tbody>
+                  <tr height="40">
+                    <td align="center">
+                      <table style="color: #000066; font-size: 18px">
+                        <tbody>
+                          <tr>
+                            <td>
+                              Protocol: localstorage<br />
+                              Metagamer: grounder + symbolizer + simplifier +
+                              pruner + optimizer<br />
+                              Strategy: Adaptive MCTS/PTS with intermediate
+                              detection<br />
+                              Identifier: <span id="player">caseyhn</span>
+                              <img
+                                src="http://gamemaster.stanford.edu/images/pencil.gif"
+                                onclick="doplayer()"
+                              />
+                              <div
+                                id="commentary"
+                                style="
+                                  margin-top: 15px;
+                                  background-color: #f9f9f9;
+                                  padding: 15px;
+                                  border-radius: 5px;
+                                "
+                              >
+                                <h4 style="margin-top: 0">Our Approach</h4>
+                                <p style="line-height: 1.6; margin: 10px 0">
+                                  We used strategies from several weeks to build
+                                  our player on the fundamental ideas covered in
+                                  class throughout the quarter. We have
+                                  incorporated the course material as follows:
+                                </p>
+
+                                <p style="line-height: 1.6; margin: 10px 0">
+                                  <strong>Metagaming Phase (Weeks 6-8):</strong
+                                  ><br />
+                                  We use grounding approaches to convey rules
+                                  more efficiently at the start clock. The rules
+                                  are then symbolized for faster reasoning.
+                                  Depending on the kind of game we're playing,
+                                  we have different pruning approaches. We
+                                  aggressively prune single-player puzzles to
+                                  concentrate on actions that are crucial to the
+                                  goal (Week 8). In antagonistic games, we
+                                  preserve all moves to keep defensive options
+                                  available.
+                                </p>
+
+                                <p style="line-height: 1.6; margin: 10px 0">
+                                  <strong
+                                    >Core Search Strategy (Week 5+):</strong
+                                  ><br />
+                                  We primarily use Monte Carlo Tree Search,
+                                  which we've improved with a couple of advanced
+                                  techniques from later weeks. Our
+                                  implementation includes progressive widening -
+                                  we don't explore every possible move
+                                  immediately, but gradually expand our search
+                                  based on how promising different areas look.
+                                  This helps manage large branching factors in
+                                  complex games.
+                                </p>
+
+                                <p style="line-height: 1.6; margin: 10px 0">
+                                  <strong>Smart Enhancements:</strong><br />
+                                  • <em>Heuristic Evaluation (Week 4):</em> We
+                                  evaluate positions based on how many moves are
+                                  available and try to progress toward goals<br />
+                                  • <em>Symmetry Detection (Week 8):</em> We try
+                                  to identify equivalent moves to avoid wasting
+                                  time on redundant searches. We wanted to use
+                                  our limited time on searches that would
+                                  improve our playing.<br />
+                                  • <em>Adaptive Exploration:</em> We tuned our
+                                  exploration vs exploitation balance based on
+                                  whether we're playing a single-player or
+                                  multi-player game.<br />
+                                  • <em>Depth-limited Search (Week 5):</em> Our
+                                  random simulations get smarter as they go
+                                  deeper. We gradually shift from exploration to
+                                  exploitation.
+                                </p>
+
+                                <p style="line-height: 1.6; margin: 10px 0">
+                                  <strong>Game-Specific Adaptations:</strong
+                                  ><br />
+                                  Because various games may require different
+                                  strategies, we identify the type of game (not
+                                  specific game but instead, game type) at the
+                                  start and adjust our approach accordingly.
+                                  When we identify games with accumulating
+                                  scores—games where your score can rise during
+                                  gameplay rather than only at the end—we
+                                  automatically switch to Persistent Tree
+                                  Search.
+                                </p>
+
+                                <p style="line-height: 1.6; margin: 10px 0">
+                                  <strong>Game-Agnostic:</strong><br />
+                                  Our player is game-agnostic because we avoided
+                                  game-specific hacks. Every tactic we employ is
+                                  applicable to various game genres. Whether
+                                  playing against other players, solving a
+                                  single-player challenge, or playing on various
+                                  border formats, our player consistently
+                                  delivers great results, even when specialist
+                                  gamers may outperform us.
+                                </p>
+                              </div>
+                              <table
+                                cellpadding="3"
+                                cellspacing="0"
+                                border="1"
+                                align="center"
+                              >
+                                <tbody>
+                                  <tr bgcolor="#eeeeee">
+                                    <th>Game</th>
+                                    <th>Strategy</th>
+                                    <th>W/ Pruning Result</th>
+                                    <th>V1 Count</th>
+                                    <th>W/o Pruning Result</th>
+                                    <th>V2 Count</th>
+                                  </tr>
+                                  <tr align="center">
+                                    <td bgcolor="#eeeeee">
+                                      multiplebuttonsandlights
+                                    </td>
+                                    <td>PTS</td>
+                                    <td>100</td>
+                                    <td>1092</td>
+                                    <td>100</td>
+                                    <td>48773238</td>
+                                  </tr>
+                                  <tr align="center">
+                                    <td bgcolor="#eeeeee">switches</td>
+                                    <td>PTS</td>
+                                    <td>100</td>
+                                    <td>553745</td>
+                                    <td>100</td>
+                                    <td>71294111</td>
+                                  </tr>
+                                  <tr align="center">
+                                    <td bgcolor="#eeeeee">multipletictactoe</td>
+                                    <td>MCTS</td>
+                                    <td>50</td>
+                                    <td>129250</td>
+                                    <td>100</td>
+                                    <td>98248</td>
+                                  </tr>
+                                  <tr align="center">
+                                    <td bgcolor="#eeeeee">
+                                      multipleknightthrough
+                                    </td>
+                                    <td>MCTS</td>
+                                    <td>0</td>
+                                    <td>129466</td>
+                                    <td>0</td>
+                                    <td>20010</td>
+                                  </tr>
+                                </tbody>
+                              </table>
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <br />
+              <center>
+                <br />
+                <textarea
+                  id="transcript"
+                  style="font-family: courier"
+                  rows="30"
+                  cols="80"
+                  readonly=""
+                ></textarea>
+              </center>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </center>
+  </body>
+</html>

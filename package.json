@@ -1,0 +1,19 @@
+{
+  "name": "cs227b-harness",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bootstrap":      "./scripts/bootstrap.sh",
+    "serve":          "./scripts/serve.sh",
+    "match":          "node ./scripts/run-match.mjs",
+    "suite":          "node ./scripts/run-suite.mjs",
+    "suite:smoke":    "node ./scripts/run-suite.mjs --player legal --opponent legal --game tictactoe --matches 3",
+    "port":           "./scripts/port.sh",
+    "fetch-players":  "./scripts/fetch-players.sh",
+    "fetch-games":    "./scripts/fetch-games.sh"
+  },
+  "dependencies": {
+    "playwright": "^1.39.0"
+  }
+}

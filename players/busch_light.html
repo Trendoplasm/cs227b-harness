@@ -1,0 +1,440 @@
+<html>
+
+<!--=======================================================================-->
+
+<head>
+  <title>Busch_Light</title>
+  <script type='text/javascript' src='/vendor/epilog.js'></script>
+  <script type='text/javascript' src='/vendor/localstorage.js'></script>
+  <script type='text/javascript' src='/vendor/hybrid.js'></script>
+  <script type='text/javascript' src="/vendor/grounder.js"></script>
+  <script type='text/javascript' src='/vendor/symbolizer.js'></script>
+  <script type='text/javascript' src='/vendor/simplifier.js'></script>
+  <script type='text/javascript' src='/vendor/pruner.js'></script>
+  <script type='text/javascript' src='/vendor/optimizer.js'></script>
+  <script type='text/javascript'>
+
+//==============================================================================
+
+var manager = 'manager';
+var player = 'busch_light';
+
+var role = 'robot';
+var rules = [];
+var startclock = 10;
+var playclock = 10;
+
+var library = [];
+var roles = [];
+var state = [];
+
+var tree = {};
+var grounded = false;
+var intermediate = false;
+
+//==============================================================================
+
+function ping() {
+  return "ready";
+}
+
+function start(r, rs, sc, pc) {
+  role = r;
+  startclock = numberize(sc);
+  playclock = numberize(pc);
+
+  rules = rs.slice(1);
+  rules = prunerulesubgoals(rules);
+  rules = prunerules(rules);
+  rules = fixrules(rules);
+  rules = definemorerules([], rules);
+
+  var rules_grounded = groundrules(rules, (startclock / 2) * 1000);
+  if (rules_grounded) {
+    // Grounded
+    grounded = true;
+    console.log("grounded");
+
+    // Symbolize
+    rules = symbolizerules(rules_grounded);
+    console.log("symbolized");
+
+    // Simplify
+    rules = simplifyrules(rules);
+    console.log("simplified");
+
+    // Prune
+    rules = definemorerules([], rules);
+    rules = pruneprogram(role, rules);
+    console.log("pruned");
+  } else {
+    grounded = false;
+  }
+
+  library = definemorerules([], rules);
+  roles = findroles(library);
+  state = findinits(library);
+
+  // Initialize tree
+  var reward = parseInt(findreward(role, state, library));
+  tree = makenode(state, findcontrol(state, library), reward, null);
+
+  // Detect intermediate state values
+  var deadline = Date.now() + Math.floor(startclock / 2 - 1) * 1000;
+  intermediate = bigswitch(state, library, role, deadline);
+  if (intermediate) {
+    console.log("intermediate state values detected");
+  } else {
+    console.log("no intermediate state values detected");
+  }
+
+  // headstart
+  while (Date.now() < deadline) {
+    console.log("headstart");
+    if (intermediate) {
+      process_pts(tree);
+    } else {
+      process_mcts(tree);
+    }
+  }
+
+  return "ready";
+}
+
+function play(move) {
+  if (grounded) move = symbolizeatom(move); // check if grounded
+  
+  if (move !== nil) {
+    state = simulate(move, state, library);
+    tree = intermediate ? subtree_pts(move, tree) : subtree_mcts(move, tree);
+    state = tree.state;
+  }
+
+  if (findcontrol(state, library) !== role) return nil;
+
+  move = intermediate ? play_pts() : play_mcts()
+  if (grounded) move = unsymbolizeatom(move);
+
+  return move;
+}
+
+function stop(move) {
+  return false;
+}
+
+function abort() {
+  return false;
+}
+
+function bigswitch(root, library, role, deadline, probes=10) {
+  for (var probe = 0; probe < probes; probe++) {
+    console.log("bigswitch");
+    if (Date.now() >= deadline) break;
+    var nextstate = root.slice(0);
+    var terminal = false;
+
+    while (!terminal) {
+      // Check if terminal
+      if (findterminalp(nextstate, library)) {
+        terminal = true;
+        break;
+      }
+
+      var legals = findlegals(nextstate, library);
+      var idx = Math.floor(Math.random() * legals.length);
+      nextstate = simulate(legals[idx], nextstate, library);
+
+      // Check reward
+      var reward = parseInt(findreward(role, nextstate, library));
+      if (reward !== 0 && reward !== 100) return true;
+    }
+  }
+
+  return false;
+}
+
+function makenode(state, mover, reward, parent) {
+  return {
+    state: state,
+    actions: [],
+    children: [],
+    mover: mover,
+    utility: reward,
+    visits: 0,
+    parent: parent
+  };
+}
+
+//==============================================================================
+// PTS code
+//==============================================================================
+
+function play_pts() {
+  const deadline = Date.now() + Math.floor(playclock - 2) * 1000;
+  while (Date.now() < deadline) process_pts(tree);
+  return selectaction(tree);
+}
+
+function process_pts(node) {
+  if (findterminalp(node.state, library)) return true;
+  if (node.children.length === 0) {
+    expand(node); // expansion
+  } else {
+    process_pts(select(node)); // selection
+  }
+  update(node); // backpropagation
+  return true;
+}
+
+function expand(node) {
+  node.actions = findlegals(node.state, library);
+  for (var i = 0; i < node.actions.length; i++) {
+    var newstate = simulate(node.actions[i], node.state, library);
+    var newmover = findcontrol(newstate, library);
+    var newscore = parseInt(findreward(role, newstate, library));
+    node.children[i] = makenode(newstate, newmover, newscore, null);
+  }
+  return true;
+}
+
+function select(node) {
+  var total = node.visits;
+  var child = node.children[0];
+  var score = value(child.utility, child.visits, total);
+  for (var i = 1; i < node.children.length; i++) {
+    var newchild = node.children[i];
+    var newscore = value(newchild.utility, newchild.visits, total);
+    if (newscore > score) {
+      child = newchild;
+      score = newscore;
+    }
+  }
+  return child;
+}
+
+function update(node) {
+  if (node.mover === role) {
+    node.utility = scoremax(node);
+  } else {
+    node.utility = scoremin(node);
+  }
+  node.visits++;
+  return true;
+}
+
+function scoremax(node) {
+  var score = node.children[0].utility;
+  for (var i = 1; i < node.children.length; i++) {
+    var newscore = node.children[i].utility;
+    if (newscore > score) score = newscore;
+  }
+  return score;
+}
+
+function scoremin(node) {
+  var score = node.children[0].utility;
+  for (var i = 1; i < node.children.length; i++) {
+    var newscore = node.children[i].utility;
+    if (newscore < score) score = newscore;
+  }
+  return score;
+}
+
+function selectaction(node) {
+  var action = node.actions[0];
+  var score = node.children[0].utility;
+  for (var i = 1; i < node.children.length; i++) {
+    var newscore = node.children[i].utility;
+    if (newscore > score) {
+      action = node.actions[i];
+      score = newscore;
+    }
+  }
+  return action;
+}
+
+function subtree_pts(move, node) {
+  if (node.children.length === 0) expand(node);
+  for (var i = 0; i < node.actions.length; i++) {
+    if (equalp(move, node.actions[i])) return node.children[i];
+  }
+  return node;
+}
+
+function value(utility, visits, total) {
+  var score = utility + Math.round((1 - visits / total) * 100);
+  return score;
+}
+
+//==============================================================================
+// MCTS code
+//==============================================================================
+
+function play_mcts() {
+  const deadline = Date.now() + Math.floor(playclock - 2) * 1000;
+  while (Date.now() < deadline) process_mcts(tree);
+  return selectaction_mcts(tree);
+}
+
+function process_mcts(root) {
+  var node = root;
+
+  // Select
+  while (node.children.length > 0) {
+    node = selectaction_uct(node);
+  }
+
+  // Expand
+  if (!findterminalp(node.state, library)) {
+    var legals = findlegals(node.state, library);
+
+    for (var i = 0; i < legals.length; i++) {
+      var move = legals[i]
+      var newstate = simulate(move, node.state, library);
+      var child = makenode(newstate, move, 0, node)
+      child.actions = findlegals(state,library);
+      node.children.push(child);
+    }
+
+    var idx = Math.floor(Math.random() * node.children.length);
+    node = node.children[idx];
+  }
+
+  // Simulate
+  var result = depthcharge(node.state);
+
+  // Backpropagate
+  while (node != null) {
+    node.visits++;
+    node.utility += result;
+    node = node.parent;
+  }
+}
+
+function selectaction_uct(node) {
+  var bestchild = node.children[0];
+  var bestreward = -Infinity;
+  var totalvisits = node.visits;
+  for (var i = 0; i < node.children.length; i++) {
+    var child = node.children[i];
+    if (child.visits === 0) return child;
+    var exploitation = child.utility / child.visits;
+    var exploration = Math.sqrt(2 * Math.log(totalvisits + 1) / child.visits);
+    var uct = exploitation + exploration;
+    if (uct > bestreward) {
+      bestreward = uct;
+      bestchild = child;
+    }
+  }
+  return bestchild;
+}
+
+function depthcharge(root) {
+  var nextstate = root.slice(0);
+  while (!findterminalp(nextstate, library)) {
+    var legals = findlegals(nextstate, library);
+    var idx = Math.floor(Math.random() * legals.length);
+    nextstate = simulate(legals[idx], nextstate, library);
+  }
+  return parseInt(findreward(role, nextstate, library));
+}
+
+function selectaction_mcts(node) {
+  var bestchild = node.children[0];
+  var bestavg = bestchild.utility / bestchild.visits;
+  for (var i = 1; i < node.children.length; i++) {
+    var child = node.children[i];
+    var avg = child.utility / child.visits;
+    if (avg > bestavg) {
+      bestavg = avg;
+      bestchild = child;
+    }
+  }
+  return bestchild.mover;
+}
+
+function subtree_mcts(move, node) {
+  for (let child of node.children) {
+    if (child.action === move) {
+      child.parent = null;
+      return child;
+    }
+  }
+  var newstate = simulate(move, node.state, library);
+  var child = makenode(newstate, move, 0);
+  return child;
+}
+
+//==============================================================================
+// End of player code
+//==============================================================================
+
+  </script>
+</head>
+
+<!--=======================================================================-->
+
+<body bgcolor='#aabbbb' onload='doinitialize()'>
+  <center>
+    <table width='720' cellspacing='0' cellpadding='40' bgcolor='#ffffff'>
+      <tr>
+        <td>
+
+<!--=======================================================================-->
+
+<center>
+  <table width='640' cellpadding='0'>
+    <tr>
+      <td width='180' align='center' valign='center'>
+        <img width='130' src='http://gamemaster.stanford.edu/images/ggp.jpg'/>
+      </td>
+      <td align='center'>
+        <span style='font-size:18pt'>&nbsp;</span>
+        <span style='font-size:32pt'>Gamemaster</span><br/>
+      </td>
+      <td width='180' align='center' style='color:#000066;font-size:18px'>
+        <i>General<br/>Game<br/>Playing</i>
+      </td>
+    </tr>
+  </table>
+</center>
+
+<!--=======================================================================-->
+
+<br/>
+<table width='640' cellpadding='8' cellspacing='0' bgcolor='#f4f8f8' border='1'>
+  <tr height='40'>
+     <td align='center'>
+<table style='color:#000066;font-size:18px'>
+  <tr>
+    <td>
+      Protocol: localstorage<br/>
+      Metagamer: grounder + symbolizer + simplifier + pruner + optimizer<br/>
+      Strategy: pts + mcts<br/>
+      Identifier: <span id='player'>busch_light</span>
+    </td>
+  </tr>
+</table>
+    </td>
+  </tr>
+</table>
+<br/>
+
+<!--=======================================================================-->
+
+<center>
+  <br/>
+  <textarea id='transcript' style='font-family:courier' rows='30' cols='80' readonly></textarea>
+</center>
+
+<!--=======================================================================-->
+
+        </td>
+      </tr>
+    </table>
+  </center>
+</body>
+
+<!--=======================================================================-->
+
+</html>
