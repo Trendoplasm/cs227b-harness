@@ -25,6 +25,22 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TEST_DIR = path.resolve(__dirname, '..');
 const PORT = Number(process.env.PORT || 8765);
 const BASE = `http://localhost:${PORT}`;
+
+function resolvePlayer(name) {
+  for (const sub of ['', 'dev', 'roster']) {
+    const rel = sub ? `players/${sub}/${name}.html` : `players/${name}.html`;
+    if (fs.existsSync(path.join(TEST_DIR, rel))) return rel;
+  }
+  throw new Error(`Player not found: ${name} (checked players/, players/dev/, players/roster/)`);
+}
+
+function resolveGame(name) {
+  for (const sub of ['', 'dev', 'roster']) {
+    const rel = sub ? `games/${sub}/${name}.html` : `games/${name}.html`;
+    if (fs.existsSync(path.join(TEST_DIR, rel))) return rel;
+  }
+  throw new Error(`Game not found: ${name} (checked games/, games/dev/, games/roster/)`);
+}
 const PER_MATCH_TIMEOUT_MS = Number(process.env.MATCH_TIMEOUT_MS || 400_000);
 
 function parseArgs(argv) {
@@ -75,6 +91,9 @@ async function runMatch(opts) {
   if (!player || !opponent || !game) {
     throw new Error('runMatch requires --player, --opponent, --game');
   }
+  const playerPath = resolvePlayer(player);
+  const opponentPath = resolvePlayer(opponent);
+  const gamePath = resolveGame(game);
   const matchup = opts.matchup || `${player}-vs-${opponent}-on-${game}`;
   const resultsDir = path.join(TEST_DIR, 'results', matchup);
   fs.mkdirSync(resultsDir, { recursive: true });
@@ -115,17 +134,17 @@ async function runMatch(opts) {
     log('runner', `opening opponent tab (${opponent})…`);
     const oppPage = await ctx.newPage();
     hookPage(oppPage, 'opp');
-    await oppPage.goto(`${BASE}/players/${opponent}.html`, { waitUntil: 'load' });
+    await oppPage.goto(`${BASE}/${opponentPath}`, { waitUntil: 'load' });
 
     log('runner', `opening player tab (${player})…`);
     const usPage = await ctx.newPage();
     hookPage(usPage, 'us');
-    await usPage.goto(`${BASE}/players/${player}.html`, { waitUntil: 'load' });
+    await usPage.goto(`${BASE}/${playerPath}`, { waitUntil: 'load' });
 
     log('runner', `opening manager tab (${game})…`);
     const mgrPage = await ctx.newPage();
     hookPage(mgrPage, 'mgr');
-    await mgrPage.goto(`${BASE}/games/${game}.html`, { waitUntil: 'load' });
+    await mgrPage.goto(`${BASE}/${gamePath}`, { waitUntil: 'load' });
 
     await mgrPage.waitForFunction(
       () => Array.isArray(window.roles) && window.roles.length >= 2 && window.library && window.library.length > 0,

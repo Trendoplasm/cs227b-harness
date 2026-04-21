@@ -10,8 +10,10 @@
     "suite":          "node ./scripts/run-suite.mjs",
     "suite:smoke":    "node ./scripts/run-suite.mjs --player legal --opponent legal --game tictactoe --matches 3",
     "port":           "./scripts/port.sh",
-    "fetch-players":  "./scripts/fetch-players.sh",
-    "fetch-games":    "./scripts/fetch-games.sh"
+    "fetch-roster-players": "./scripts/fetch-players.sh",
+    "fetch-roster-games":  "./scripts/fetch-games.sh",
+    "fetch-dev-players":   "node ./scripts/fetch-dev-players.mjs",
+    "fetch-dev-games":     "node ./scripts/fetch-dev-games.mjs"
   },
   "dependencies": {
     "playwright": "^1.39.0"

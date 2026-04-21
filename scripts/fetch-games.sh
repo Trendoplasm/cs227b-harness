@@ -6,7 +6,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-GAMES_DIR="$HERE/games"
+GAMES_DIR="$HERE/games/roster"
 mkdir -p "$GAMES_DIR"
 
 GAMES_URL="http://gamemaster.stanford.edu/homepage/showgames.php"
