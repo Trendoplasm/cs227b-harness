@@ -11,9 +11,9 @@ git clone https://github.com/Trendoplasm/cs227b-harness.git && cd cs227b-harness
 npm install
 npx playwright install chromium
 
-# Fetch the latest classmate-created games and players (will prompt login)
-npm run fetch-dev-players
-npm run fetch-dev-games
+# Fetch the latest classmate-created players and games (will prompt login)
+npm run fetch-players -- --dev
+npm run fetch-games -- --dev
 ```
 
 ## Developing Your Player
@@ -159,23 +159,15 @@ Run `ls games/roster/` for the full list, `ls games/dev/` for classmates' custom
 
 ## Fetching Players & Games
 
-**Public roster (no login required):**
-
 ```bash
-npm run fetch-roster-players
-npm run fetch-roster-games
-npm run bootstrap              # re-vendorize JS dependencies after fetching
+npm run fetch-players            # public roster (no login required)
+npm run fetch-players -- --dev   # developer portal (classmates' custom players)
+
+npm run fetch-games              # public roster
+npm run fetch-games -- --dev     # developer portal (classmates' custom games)
 ```
 
-**Developer portal (requires login):**
-
-```bash
-npm run fetch-dev-players
-npm run fetch-dev-games
-npm run bootstrap
-```
-
-The dev fetch scripts automatically open a browser for login if no saved session exists or if the session has expired. After you sign in, cookies are saved locally and reused on subsequent runs. Dev players that already exist in the public roster are automatically skipped.
+The `--dev` flag fetches from the developer portal, which requires a Stanford Gamemaster account. On first run (or when your session expires), a browser window will open for you to sign in. After that, cookies are saved locally and reused on subsequent runs. Dev players/games that already exist in the public roster are automatically skipped.
 
 ## Realism
 

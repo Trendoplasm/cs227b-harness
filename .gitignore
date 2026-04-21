@@ -1,4 +1,15 @@
-results/
+# Node clutter
 node_modules/
-.cookies.json
+
+# Mac clutter
 .DS_Store
+
+# Result logs
+results/
+
+# Non roster players and games (likely to fluctuate wildly over time, can always be rebuilt)
+players/dev/
+games/dev/
+
+# Your saved cookie data (do not commit this)
+.cookies.json
