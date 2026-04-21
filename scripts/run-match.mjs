@@ -26,12 +26,41 @@ const TEST_DIR = path.resolve(__dirname, '..');
 const PORT = Number(process.env.PORT || 8765);
 const BASE = `http://localhost:${PORT}`;
 
+function allNames(kind) {
+  const names = new Set();
+  for (const sub of ['', 'dev', 'roster']) {
+    const dir = path.join(TEST_DIR, kind, sub);
+    if (!fs.existsSync(dir)) continue;
+    for (const f of fs.readdirSync(dir)) {
+      if (f.endsWith('.html')) names.add(f.replace('.html', ''));
+    }
+  }
+  return [...names];
+}
+
+function suggest(input, kind) {
+  const clean = input.replace(/\.html$/, '');
+  if (clean !== input) {
+    for (const sub of ['', 'dev', 'roster']) {
+      const rel = sub ? `${kind}/${sub}/${clean}.html` : `${kind}/${clean}.html`;
+      if (fs.existsSync(path.join(TEST_DIR, rel))) return clean;
+    }
+  }
+  const all = allNames(kind);
+  const lower = input.toLowerCase();
+  const match = all.find(n => n.toLowerCase() === lower)
+    || all.find(n => n.includes(input) || input.includes(n));
+  return match || null;
+}
+
 function resolvePlayer(name) {
   for (const sub of ['', 'dev', 'roster']) {
     const rel = sub ? `players/${sub}/${name}.html` : `players/${name}.html`;
     if (fs.existsSync(path.join(TEST_DIR, rel))) return rel;
   }
-  throw new Error(`Player not found: ${name} (checked players/, players/dev/, players/roster/)`);
+  const hint = suggest(name, 'players');
+  const msg = hint ? `Player "${name}" not found. Did you mean "${hint}"?` : `Player "${name}" not found.`;
+  throw new Error(msg);
 }
 
 function resolveGame(name) {
@@ -39,7 +68,9 @@ function resolveGame(name) {
     const rel = sub ? `games/${sub}/${name}.html` : `games/${name}.html`;
     if (fs.existsSync(path.join(TEST_DIR, rel))) return rel;
   }
-  throw new Error(`Game not found: ${name} (checked games/, games/dev/, games/roster/)`);
+  const hint = suggest(name, 'games');
+  const msg = hint ? `Game "${name}" not found. Did you mean "${hint}"?` : `Game "${name}" not found.`;
+  throw new Error(msg);
 }
 const PER_MATCH_TIMEOUT_MS = Number(process.env.MATCH_TIMEOUT_MS || 400_000);
 
@@ -325,10 +356,30 @@ async function runMatch(opts) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const opts = parseArgs(process.argv.slice(2));
   runMatch(opts).then((r) => {
+    const green = (s) => `\x1b[32m${s}\x1b[0m`;
+    const red = (s) => `\x1b[31m${s}\x1b[0m`;
+    const dim = (s) => `\x1b[2m${s}\x1b[0m`;
+    const bold = (s) => `\x1b[1m${s}\x1b[0m`;
+
+    if (r.timedOut) {
+      console.log(red('\nTimed out.'));
+    } else if (!r.terminal) {
+      console.log(red('\nGame did not finish.'));
+    } else {
+      const ourScore = r.our_score, oppScore = r.opp_score;
+      const outcome = ourScore > oppScore ? green(bold('Win'))
+        : ourScore < oppScore ? red(bold('Loss'))
+        : bold('Draw');
+      console.log(`\n${outcome}  ${r.player} ${dim('(' + r.our_role + ')')} ${ourScore}-${oppScore} ${r.opponent} ${dim('(' + r.opp_role + ')')}`);
+      if (r.our_errors > 0) console.log(red(`  ${r.our_errors} illegal move(s) by ${r.player}`));
+      if (r.opp_errors > 0) console.log(dim(`  ${r.opp_errors} illegal move(s) by ${r.opponent}`));
+    }
+    console.log('');
+
     const pass = r.our_errors === 0 && !r.timedOut && r.terminal;
     process.exit(pass ? 0 : 1);
   }).catch((e) => {
-    console.error('ERROR:', e);
+    console.error(`\x1b[31mERROR: ${e.message}\x1b[0m`);
     process.exit(2);
   });
 }
