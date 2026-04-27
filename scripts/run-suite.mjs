@@ -20,11 +20,15 @@ const dim = (s) => `\x1b[2m${s}\x1b[0m`;
 const bold = (s) => `\x1b[1m${s}\x1b[0m`;
 
 function parseArgs(argv) {
-  const out = { matches: 10, minScore: 50, swapRoles: false, throttle: true };
+  const out = { opponents: [], matches: 10, minScore: 50, swapRoles: false, throttle: true };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--player')            out.player = argv[++i];
-    else if (a === '--opponent')          out.opponent = argv[++i];
+    else if (a === '--opponent') {
+      while (i + 1 < argv.length && !argv[i + 1].startsWith('--')) {
+        out.opponents.push(argv[++i]);
+      }
+    }
     else if (a === '--game')              out.game = argv[++i];
     else if (a === '--matchup')           out.matchup = argv[++i];
     else if (a === '--matches')           out.matches = Number(argv[++i]);
@@ -36,6 +40,7 @@ function parseArgs(argv) {
     else if (a === '--headed')           out.headed = true;
     else if (a === '--disable-throttle') out.throttle = false;
   }
+  out.opponent = out.opponents[0] || null;
   return out;
 }
 
@@ -108,8 +113,11 @@ async function main() {
 
   const hasThreshold = opts.minScore !== undefined || opts.minScoreP1 !== undefined || opts.minScoreP2 !== undefined;
 
-  let header = opts.opponent
-    ? `\n${bold(opts.player)} vs ${bold(opts.opponent)} on ${bold(opts.game)}`
+  const oppLabel = opts.opponents.length
+    ? opts.opponents.join(', ')
+    : null;
+  let header = oppLabel
+    ? `\n${bold(opts.player)} vs ${bold(oppLabel)} on ${bold(opts.game)}`
     : `\n${bold(opts.player)} on ${bold(opts.game)}`;
   header += dim(` (${opts.matches} match${opts.matches === 1 ? '' : 'es'})`);
   if (hasThreshold) {
@@ -127,7 +135,8 @@ async function main() {
     const results = [];
     for (let i = 1; i <= opts.matches; i++) {
       const label = `suite-${Date.now()}-${i}`;
-      const swapRoles = opts.opponent && (opts.minScoreP1 !== undefined || opts.minScoreP2 !== undefined)
+      // swap-roles only makes sense for 2-player games
+      const swapRoles = opts.opponents.length === 1 && (opts.minScoreP1 !== undefined || opts.minScoreP2 !== undefined)
         ? (i % 2 === 0)
         : !!opts.swapRoles;
 
@@ -136,7 +145,7 @@ async function main() {
       try {
         r = await runMatch({
           player: opts.player,
-          opponent: opts.opponent,
+          opponents: opts.opponents,
           game: opts.game,
           matchup: opts.matchup,
           label,
@@ -146,7 +155,7 @@ async function main() {
           throttle: opts.throttle,
         });
       } catch (e) {
-        r = { matchId: label, error: String(e), our_errors: 999, opp_errors: 0, our_score: 0, opp_score: 0, winner: 'error', terminal: false, timedOut: false, solo: !opts.opponent };
+        r = { matchId: label, error: String(e), our_errors: 999, our_score: 0, terminal: false, timedOut: false, solo: opts.opponents.length === 0, opponents: opts.opponents, opponent_details: [] };
       }
       r._matchIdx = i;
       r._elapsed = Date.now() - matchStart;
@@ -154,9 +163,15 @@ async function main() {
 
       const pass = passMatch(r, opts, i);
       const icon = pass ? green('  pass') : red('  FAIL');
-      let detail = r.solo
-        ? `score ${r.our_score} as ${r.our_role || '?'}`
-        : `score ${r.our_score}-${r.opp_score} as ${r.our_role || '?'}`;
+      let detail;
+      if (r.solo) {
+        detail = `score ${r.our_score} as ${r.our_role || '?'}`;
+      } else if ((r.opponents || []).length === 1) {
+        detail = `score ${r.our_score}-${r.opp_score} as ${r.our_role || '?'}`;
+      } else {
+        const oppScores = (r.opponent_details || []).map((d) => `${d.name}:${d.score}`).join(' ');
+        detail = `score ${r.our_score} as ${r.our_role || '?'}  |  ${oppScores}`;
+      }
       if (!pass) detail += ` (${failReason(r, opts, i)})`;
       const time = dim(formatTime(r._elapsed));
       console.log(`${icon}  ${dim(`${i}/${opts.matches}`)}  ${detail}  ${time}`);

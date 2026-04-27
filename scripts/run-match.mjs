@@ -1,16 +1,14 @@
-// run-match.mjs — run a single player-vs-opponent match via Playwright.
+// run-match.mjs — run a single match via Playwright.
+// Supports single-player, 2-player, and N-player games.
+//
 // Flags:
 //   --player    <name>          basename in players/ (required)
-//   --opponent  <name>          basename in players/ (required for multi-player games)
+//   --opponent  <name> [<name>...]  one or more opponents (required for multi-player games)
 //   --game      <name>          basename in games/   (required)
 //   --label     <id>            output filename prefix under results/<matchup>/
 //                               (default: timestamp)
 //   --matchup   <name>          output subdir under results/
-//                               (default: <player>-vs-<opponent>-on-<game>
-//                                or <player>-on-<game> for single-player)
-//   --swap-roles                if set, passes opponent as players[0] and
-//                               player as players[1] instead of the default
-//                               (player=players[0], opponent=players[1]).
+//   --swap-roles                swap player/opponent roles (2-player only)
 //   --verbose                   log all protocol messages (SEND/RECV)
 //   --headed                    run in a visible browser; stays open after game
 //   --disable-throttle          disable background-tab timer throttling (on by default)
@@ -76,11 +74,15 @@ function resolveGame(name) {
 const PER_MATCH_TIMEOUT_MS = Number(process.env.MATCH_TIMEOUT_MS || 400_000);
 
 function parseArgs(argv) {
-  const out = { swapRoles: false, verbose: false, headed: false, throttle: true };
+  const out = { opponents: [], swapRoles: false, verbose: false, headed: false, throttle: true };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--player')    out.player   = argv[++i];
-    else if (a === '--opponent')  out.opponent = argv[++i];
+    else if (a === '--opponent') {
+      while (i + 1 < argv.length && !argv[i + 1].startsWith('--')) {
+        out.opponents.push(argv[++i]);
+      }
+    }
     else if (a === '--game')      out.game     = argv[++i];
     else if (a === '--label')     out.label    = argv[++i];
     else if (a === '--matchup')   out.matchup  = argv[++i];
@@ -89,6 +91,8 @@ function parseArgs(argv) {
     else if (a === '--headed')    out.headed = true;
     else if (a === '--disable-throttle') out.throttle = false;
   }
+  // Backward compat: expose first opponent as .opponent
+  out.opponent = out.opponents[0] || null;
   return out;
 }
 
@@ -118,15 +122,33 @@ async function maybeSpawnServer() {
   throw new Error('Could not start http.server on port ' + PORT);
 }
 
+// Build unique identifiers for all players. Duplicate names get suffixed: legal, legal-2, legal-3…
+function makeIdentifiers(playerName, opponentNames) {
+  const all = [playerName, ...opponentNames];
+  const counts = {};
+  const ids = [];
+  for (const name of all) {
+    counts[name] = (counts[name] || 0) + 1;
+    ids.push(counts[name] === 1 ? name : `${name}-${counts[name]}`);
+  }
+  // If the first occurrence of a name later gets duplicates, retroactively it's fine —
+  // the first stays unsuffixed, subsequent get -2, -3, etc.
+  return ids;
+}
+
 async function runMatch(opts) {
-  const { player, opponent, game, swapRoles } = opts;
+  const { player, game, swapRoles } = opts;
+  const opponents = opts.opponents || (opts.opponent ? [opts.opponent] : []);
   if (!player || !game) {
     throw new Error('runMatch requires --player and --game');
   }
+
   const playerPath = resolvePlayer(player);
-  const opponentPath = opponent ? resolvePlayer(opponent) : null;
+  const opponentPaths = opponents.map((o) => resolvePlayer(o));
   const gamePath = resolveGame(game);
-  const matchup = opts.matchup || (opponent ? `${player}-vs-${opponent}-on-${game}` : `${player}-on-${game}`);
+
+  const oppLabel = opponents.length ? opponents.join('+') : null;
+  const matchup = opts.matchup || (oppLabel ? `${player}-vs-${oppLabel}-on-${game}` : `${player}-on-${game}`);
   const resultsDir = path.join(TEST_DIR, 'results', matchup);
   fs.mkdirSync(resultsDir, { recursive: true });
 
@@ -163,13 +185,14 @@ async function runMatch(opts) {
       });
     };
 
-    // Open opponent tab only for multi-player games
-    let oppPage = null;
-    if (opponentPath) {
-      log('runner', `opening opponent tab (${opponent})…`);
-      oppPage = await ctx.newPage();
-      hookPage(oppPage, 'opp');
-      await oppPage.goto(`${BASE}/${opponentPath}`, { waitUntil: 'load' });
+    // Open opponent tabs
+    const oppPages = [];
+    for (let i = 0; i < opponentPaths.length; i++) {
+      log('runner', `opening opponent tab ${i + 1} (${opponents[i]})…`);
+      const page = await ctx.newPage();
+      hookPage(page, `opp${opponents.length > 1 ? i + 1 : ''}`);
+      await page.goto(`${BASE}/${opponentPaths[i]}`, { waitUntil: 'load' });
+      oppPages.push(page);
     }
 
     log('runner', `opening player tab (${player})…`);
@@ -189,55 +212,57 @@ async function runMatch(opts) {
     const managerRoles = await mgrPage.evaluate(() => window.roles.map((r) => window.grind ? window.grind(r) : String(r)));
     log('runner', `manager roles: ${JSON.stringify(managerRoles)}`);
 
-    const solo = managerRoles.length === 1;
+    const numRoles = managerRoles.length;
+    const numPlayers = 1 + opponents.length;
+    const solo = numRoles === 1;
 
-    if (solo && opponent) {
+    if (solo && opponents.length > 0) {
       throw new Error(`"${game}" is a single-player game — do not pass --opponent`);
     }
-    if (!solo && !opponent) {
-      throw new Error(`"${game}" is a ${managerRoles.length}-player game — --opponent is required`);
+    if (!solo && opponents.length === 0) {
+      throw new Error(`"${game}" has ${numRoles} roles — --opponent is required`);
+    }
+    if (numPlayers !== numRoles) {
+      throw new Error(`"${game}" has ${numRoles} roles but ${numPlayers} player${numPlayers === 1 ? ' was' : 's were'} specified (need ${numRoles})`);
+    }
+    if (swapRoles && numRoles !== 2) {
+      throw new Error(`--swap-roles is only supported for 2-player games`);
     }
 
-    const usIdentifier  = player;
-    const oppIdentifier = opponent ? ((player === opponent) ? `${opponent}-opp` : opponent) : null;
+    // Build unique identifiers
+    const identifiers = makeIdentifiers(player, opponents);
+    const usIdentifier = identifiers[0];
+    const oppIdentifiers = identifiers.slice(1);
 
+    // Set identifiers on player tabs
     await usPage.evaluate((n) => { window.player = n;
       var el = document.getElementById('player'); if (el) el.innerText = n; }, usIdentifier);
-    if (oppPage) {
-      await oppPage.evaluate((n) => { window.player = n;
-        var el = document.getElementById('player'); if (el) el.innerText = n; }, oppIdentifier);
+    for (let i = 0; i < oppPages.length; i++) {
+      await oppPages[i].evaluate((n) => { window.player = n;
+        var el = document.getElementById('player'); if (el) el.innerText = n; }, oppIdentifiers[i]);
     }
 
-    let ourIsP0;
+    // Assign roles
+    let ourRoleIdx;
+    let playerOrder; // identifiers in role order
     if (solo) {
-      await mgrPage.evaluate((name) => {
-        window.players = [name];
-        window.createscoreboard();
-      }, usIdentifier);
-      ourIsP0 = true;
-      log('runner', `players[0]=${usIdentifier} (single-player)`);
+      playerOrder = [usIdentifier];
+      ourRoleIdx = 0;
+    } else if (numRoles === 2 && swapRoles) {
+      playerOrder = [oppIdentifiers[0], usIdentifier];
+      ourRoleIdx = 1;
     } else {
-      let p0name, p1name;
-      if (player === opponent) {
-        p0name = usIdentifier;
-        p1name = oppIdentifier;
-        ourIsP0 = true;
-      } else if (swapRoles) {
-        p0name = oppIdentifier;
-        p1name = usIdentifier;
-        ourIsP0 = false;
-      } else {
-        p0name = usIdentifier;
-        p1name = oppIdentifier;
-        ourIsP0 = true;
-      }
-      await mgrPage.evaluate(({ a, b }) => {
-        window.players = [a, b];
-        window.createscoreboard();
-      }, { a: p0name, b: p1name });
-      log('runner', `players[0]=${p0name} players[1]=${p1name} swapRoles=${swapRoles}`);
+      playerOrder = [usIdentifier, ...oppIdentifiers];
+      ourRoleIdx = 0;
     }
 
+    await mgrPage.evaluate((names) => {
+      window.players = names;
+      window.createscoreboard();
+    }, playerOrder);
+    log('runner', `players: ${JSON.stringify(playerOrder)} ourRoleIdx=${ourRoleIdx}`);
+
+    // Verbose hooks
     if (opts.verbose) {
       const verboseHook = (identity) => {
         const el = document.getElementById('transcript');
@@ -262,9 +287,12 @@ async function runMatch(opts) {
       };
       await mgrPage.evaluate(verboseHook, 'manager');
       await usPage.evaluate(verboseHook, usIdentifier);
-      if (oppPage) await oppPage.evaluate(verboseHook, oppIdentifier);
+      for (let i = 0; i < oppPages.length; i++) {
+        await oppPages[i].evaluate(verboseHook, oppIdentifiers[i]);
+      }
     }
 
+    // Timer throttling
     if (opts.throttle) {
       const throttleHook = () => {
         const MIN_DELAY = 1000;
@@ -278,11 +306,11 @@ async function runMatch(opts) {
         };
       };
       await usPage.evaluate(throttleHook);
-      if (oppPage) await oppPage.evaluate(throttleHook);
+      for (const p of oppPages) await p.evaluate(throttleHook);
       log('runner', 'timer throttling enabled on player tabs (1000ms min)');
     }
 
-    const numPlayers = solo ? 1 : 2;
+    // Ping
     log('runner', 'click Ping');
     await mgrPage.click('#pinger');
     await mgrPage.waitForFunction(
@@ -291,6 +319,7 @@ async function runMatch(opts) {
     );
     log('runner', 'ping complete');
 
+    // Run
     log('runner', 'click Run');
     await mgrPage.click('#starter');
 
@@ -339,51 +368,52 @@ async function runMatch(opts) {
       log('runner', `TIMEOUT: ${JSON.stringify(final)}`);
     }
 
-    const rewardByRole = {};
-    (final.roles || []).forEach((r, i) => { rewardByRole[r] = Number(final.rewards[i]); });
+    // Build scores
+    const scores = {};
+    (final.roles || []).forEach((r, i) => { scores[r] = Number(final.rewards[i]); });
 
-    if (solo) {
-      const ourRole = final.roles[0];
-      result = {
-        matchId, matchup, ts,
-        player, opponent: null, game,
-        solo: true,
-        swap_roles: false,
-        our_name: usIdentifier, opp_name: null,
-        our_role: ourRole, opp_role: null,
-        our_score: rewardByRole[ourRole] || 0,
-        opp_score: null,
-        our_errors: Number(final.errors?.[ourRole] || 0),
-        opp_errors: null,
-        turns: final.msgid,
-        terminal: !!final.terminal,
-        timedOut: !!final.TIMEOUT,
-        winner: null,
-        consoleLog: consolePath,
-      };
-    } else {
-      const ourRole = final.roles[ourIsP0 ? 0 : 1];
-      const oppRole = final.roles[ourIsP0 ? 1 : 0];
-      result = {
-        matchId, matchup, ts,
-        player, opponent, game,
-        solo: false,
-        swap_roles: swapRoles,
-        our_name: usIdentifier, opp_name: oppIdentifier,
-        our_role: ourRole, opp_role: oppRole,
-        our_score: rewardByRole[ourRole] || 0,
-        opp_score: rewardByRole[oppRole] || 0,
-        our_errors: Number(final.errors?.[ourRole] || 0),
-        opp_errors: Number(final.errors?.[oppRole] || 0),
-        turns: final.msgid,
-        terminal: !!final.terminal,
-        timedOut: !!final.TIMEOUT,
-        winner: (rewardByRole[ourRole] || 0) > (rewardByRole[oppRole] || 0) ? ourRole
-              : (rewardByRole[oppRole] || 0) > (rewardByRole[ourRole] || 0) ? oppRole
-              : 'draw',
-        consoleLog: consolePath,
-      };
+    const ourRole = final.roles[ourRoleIdx];
+    const ourScore = scores[ourRole] || 0;
+    const ourErrors = Number(final.errors?.[ourRole] || 0);
+
+    // Opponent details (one entry per opponent, in role order)
+    const oppDetails = [];
+    for (let i = 0; i < opponents.length; i++) {
+      const roleIdx = (i < ourRoleIdx) ? i : i + 1; // skip our role index
+      // With swap-roles the ordering is different; use playerOrder to find the role
+      const oppRoleIdx = playerOrder.indexOf(oppIdentifiers[i]);
+      const role = final.roles[oppRoleIdx];
+      oppDetails.push({
+        name: opponents[i],
+        identifier: oppIdentifiers[i],
+        role,
+        score: scores[role] || 0,
+        errors: Number(final.errors?.[role] || 0),
+      });
     }
+
+    result = {
+      matchId, matchup, ts,
+      player, opponents, game,
+      solo,
+      swap_roles: swapRoles,
+      our_name: usIdentifier,
+      our_role: ourRole,
+      our_score: ourScore,
+      our_errors: ourErrors,
+      opponent_details: oppDetails,
+      scores,
+      // Backward compat for 2-player consumers
+      opponent: opponents[0] || null,
+      opp_name: oppDetails[0]?.identifier || null,
+      opp_role: oppDetails[0]?.role || null,
+      opp_score: oppDetails[0]?.score ?? null,
+      opp_errors: oppDetails[0]?.errors ?? null,
+      turns: final.msgid,
+      terminal: !!final.terminal,
+      timedOut: !!final.TIMEOUT,
+      consoleLog: consolePath,
+    };
 
     fs.writeFileSync(jsonPath, JSON.stringify(result, null, 2));
     log('runner', `DONE: ${JSON.stringify(result)}`);
@@ -415,7 +445,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       const scoreColor = r.our_score >= 100 ? green : r.our_score > 0 ? bold : red;
       console.log(`\n${scoreColor(bold('Score'))}  ${r.player} ${dim('(' + r.our_role + ')')} ${r.our_score}`);
       if (r.our_errors > 0) console.log(red(`  ${r.our_errors} illegal move(s) by ${r.player}`));
-    } else {
+    } else if (r.opponents.length === 1) {
+      // Classic 2-player output
       const ourScore = r.our_score, oppScore = r.opp_score;
       const outcome = ourScore > oppScore ? green(bold('Win'))
         : ourScore < oppScore ? red(bold('Loss'))
@@ -423,6 +454,20 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       console.log(`\n${outcome}  ${r.player} ${dim('(' + r.our_role + ')')} ${ourScore}-${oppScore} ${r.opponent} ${dim('(' + r.opp_role + ')')}`);
       if (r.our_errors > 0) console.log(red(`  ${r.our_errors} illegal move(s) by ${r.player}`));
       if (r.opp_errors > 0) console.log(dim(`  ${r.opp_errors} illegal move(s) by ${r.opponent}`));
+    } else {
+      // N-player output
+      const bestOpp = Math.max(...r.opponent_details.map((d) => d.score));
+      const outcome = r.our_score > bestOpp ? green(bold('Win'))
+        : r.our_score < bestOpp ? red(bold('Loss'))
+        : bold('Draw');
+      const oppSummary = r.opponent_details.map((d) =>
+        `${d.name}${dim('(' + d.role + ')')}:${d.score}`
+      ).join(', ');
+      console.log(`\n${outcome}  ${r.player} ${dim('(' + r.our_role + ')')} ${r.our_score}  |  ${oppSummary}`);
+      if (r.our_errors > 0) console.log(red(`  ${r.our_errors} illegal move(s) by ${r.player}`));
+      for (const d of r.opponent_details) {
+        if (d.errors > 0) console.log(dim(`  ${d.errors} illegal move(s) by ${d.name}`));
+      }
     }
     console.log('');
 
