@@ -7,6 +7,10 @@ node_modules/
 # Result logs
 results/
 
+# Custom players (symlinked from separate repo)
+players/*.html
+!players/myplayer.html
+
 # Non roster players and games (likely to fluctuate wildly over time, can always be rebuilt)
 players/dev/
 games/dev/

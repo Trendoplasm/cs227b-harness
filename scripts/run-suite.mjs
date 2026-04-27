@@ -1,7 +1,8 @@
 // run-suite.mjs — run N matches, check pass criteria, emit a summary.
 //
 // Shared flags (passed through to run-match.mjs):
-//   --player, --opponent, --game, --matchup, --verbose, --headed, --disable-throttle
+//   --player, --opponent (optional for single-player games), --game,
+//   --matchup, --verbose, --headed, --disable-throttle
 //
 // Suite-only flags:
 //   --matches <n>                   default 10
@@ -100,14 +101,16 @@ function formatTime(ms) {
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
-  if (!opts.player || !opts.opponent || !opts.game) {
-    console.error('usage: run-suite.mjs --player P --opponent O --game G [--min-score N] [--matches N]');
+  if (!opts.player || !opts.game) {
+    console.error('usage: run-suite.mjs --player P [--opponent O] --game G [--min-score N] [--matches N]');
     process.exit(2);
   }
 
   const hasThreshold = opts.minScore !== undefined || opts.minScoreP1 !== undefined || opts.minScoreP2 !== undefined;
 
-  let header = `\n${bold(opts.player)} vs ${bold(opts.opponent)} on ${bold(opts.game)}`;
+  let header = opts.opponent
+    ? `\n${bold(opts.player)} vs ${bold(opts.opponent)} on ${bold(opts.game)}`
+    : `\n${bold(opts.player)} on ${bold(opts.game)}`;
   header += dim(` (${opts.matches} match${opts.matches === 1 ? '' : 'es'})`);
   if (hasThreshold) {
     if (opts.minScoreP1 !== undefined) {
@@ -124,7 +127,7 @@ async function main() {
     const results = [];
     for (let i = 1; i <= opts.matches; i++) {
       const label = `suite-${Date.now()}-${i}`;
-      const swapRoles = (opts.minScoreP1 !== undefined || opts.minScoreP2 !== undefined)
+      const swapRoles = opts.opponent && (opts.minScoreP1 !== undefined || opts.minScoreP2 !== undefined)
         ? (i % 2 === 0)
         : !!opts.swapRoles;
 
@@ -143,7 +146,7 @@ async function main() {
           throttle: opts.throttle,
         });
       } catch (e) {
-        r = { matchId: label, error: String(e), our_errors: 999, opp_errors: 0, our_score: 0, opp_score: 0, winner: 'error', terminal: false, timedOut: false };
+        r = { matchId: label, error: String(e), our_errors: 999, opp_errors: 0, our_score: 0, opp_score: 0, winner: 'error', terminal: false, timedOut: false, solo: !opts.opponent };
       }
       r._matchIdx = i;
       r._elapsed = Date.now() - matchStart;
@@ -151,7 +154,9 @@ async function main() {
 
       const pass = passMatch(r, opts, i);
       const icon = pass ? green('  pass') : red('  FAIL');
-      let detail = `score ${r.our_score}-${r.opp_score} as ${r.our_role || '?'}`;
+      let detail = r.solo
+        ? `score ${r.our_score} as ${r.our_role || '?'}`
+        : `score ${r.our_score}-${r.opp_score} as ${r.our_role || '?'}`;
       if (!pass) detail += ` (${failReason(r, opts, i)})`;
       const time = dim(formatTime(r._elapsed));
       console.log(`${icon}  ${dim(`${i}/${opts.matches}`)}  ${detail}  ${time}`);

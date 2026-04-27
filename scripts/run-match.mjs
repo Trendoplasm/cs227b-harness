@@ -1,12 +1,13 @@
 // run-match.mjs — run a single player-vs-opponent match via Playwright.
 // Flags:
 //   --player    <name>          basename in players/ (required)
-//   --opponent  <name>          basename in players/ (required)
+//   --opponent  <name>          basename in players/ (required for multi-player games)
 //   --game      <name>          basename in games/   (required)
 //   --label     <id>            output filename prefix under results/<matchup>/
 //                               (default: timestamp)
 //   --matchup   <name>          output subdir under results/
-//                               (default: <player>-vs-<opponent>-on-<game>)
+//                               (default: <player>-vs-<opponent>-on-<game>
+//                                or <player>-on-<game> for single-player)
 //   --swap-roles                if set, passes opponent as players[0] and
 //                               player as players[1] instead of the default
 //                               (player=players[0], opponent=players[1]).
@@ -119,13 +120,13 @@ async function maybeSpawnServer() {
 
 async function runMatch(opts) {
   const { player, opponent, game, swapRoles } = opts;
-  if (!player || !opponent || !game) {
-    throw new Error('runMatch requires --player, --opponent, --game');
+  if (!player || !game) {
+    throw new Error('runMatch requires --player and --game');
   }
   const playerPath = resolvePlayer(player);
-  const opponentPath = resolvePlayer(opponent);
+  const opponentPath = opponent ? resolvePlayer(opponent) : null;
   const gamePath = resolveGame(game);
-  const matchup = opts.matchup || `${player}-vs-${opponent}-on-${game}`;
+  const matchup = opts.matchup || (opponent ? `${player}-vs-${opponent}-on-${game}` : `${player}-on-${game}`);
   const resultsDir = path.join(TEST_DIR, 'results', matchup);
   fs.mkdirSync(resultsDir, { recursive: true });
 
@@ -162,10 +163,14 @@ async function runMatch(opts) {
       });
     };
 
-    log('runner', `opening opponent tab (${opponent})…`);
-    const oppPage = await ctx.newPage();
-    hookPage(oppPage, 'opp');
-    await oppPage.goto(`${BASE}/${opponentPath}`, { waitUntil: 'load' });
+    // Open opponent tab only for multi-player games
+    let oppPage = null;
+    if (opponentPath) {
+      log('runner', `opening opponent tab (${opponent})…`);
+      oppPage = await ctx.newPage();
+      hookPage(oppPage, 'opp');
+      await oppPage.goto(`${BASE}/${opponentPath}`, { waitUntil: 'load' });
+    }
 
     log('runner', `opening player tab (${player})…`);
     const usPage = await ctx.newPage();
@@ -178,40 +183,60 @@ async function runMatch(opts) {
     await mgrPage.goto(`${BASE}/${gamePath}`, { waitUntil: 'load' });
 
     await mgrPage.waitForFunction(
-      () => Array.isArray(window.roles) && window.roles.length >= 2 && window.library && window.library.length > 0,
+      () => Array.isArray(window.roles) && window.roles.length >= 1 && window.library && window.library.length > 0,
       null, { timeout: 15_000 },
     );
     const managerRoles = await mgrPage.evaluate(() => window.roles.map((r) => window.grind ? window.grind(r) : String(r)));
     log('runner', `manager roles: ${JSON.stringify(managerRoles)}`);
 
+    const solo = managerRoles.length === 1;
+
+    if (solo && opponent) {
+      throw new Error(`"${game}" is a single-player game — do not pass --opponent`);
+    }
+    if (!solo && !opponent) {
+      throw new Error(`"${game}" is a ${managerRoles.length}-player game — --opponent is required`);
+    }
+
     const usIdentifier  = player;
-    const oppIdentifier = (player === opponent) ? `${opponent}-opp` : opponent;
+    const oppIdentifier = opponent ? ((player === opponent) ? `${opponent}-opp` : opponent) : null;
 
     await usPage.evaluate((n) => { window.player = n;
       var el = document.getElementById('player'); if (el) el.innerText = n; }, usIdentifier);
-    await oppPage.evaluate((n) => { window.player = n;
-      var el = document.getElementById('player'); if (el) el.innerText = n; }, oppIdentifier);
-
-    let p0name, p1name, ourIsP0;
-    if (player === opponent) {
-      p0name = usIdentifier;
-      p1name = oppIdentifier;
-      ourIsP0 = true;
-    } else if (swapRoles) {
-      p0name = oppIdentifier;
-      p1name = usIdentifier;
-      ourIsP0 = false;
-    } else {
-      p0name = usIdentifier;
-      p1name = oppIdentifier;
-      ourIsP0 = true;
+    if (oppPage) {
+      await oppPage.evaluate((n) => { window.player = n;
+        var el = document.getElementById('player'); if (el) el.innerText = n; }, oppIdentifier);
     }
 
-    await mgrPage.evaluate(({ a, b }) => {
-      window.players = [a, b];
-      window.createscoreboard();
-    }, { a: p0name, b: p1name });
-    log('runner', `players[0]=${p0name} players[1]=${p1name} swapRoles=${swapRoles}`);
+    let ourIsP0;
+    if (solo) {
+      await mgrPage.evaluate((name) => {
+        window.players = [name];
+        window.createscoreboard();
+      }, usIdentifier);
+      ourIsP0 = true;
+      log('runner', `players[0]=${usIdentifier} (single-player)`);
+    } else {
+      let p0name, p1name;
+      if (player === opponent) {
+        p0name = usIdentifier;
+        p1name = oppIdentifier;
+        ourIsP0 = true;
+      } else if (swapRoles) {
+        p0name = oppIdentifier;
+        p1name = usIdentifier;
+        ourIsP0 = false;
+      } else {
+        p0name = usIdentifier;
+        p1name = oppIdentifier;
+        ourIsP0 = true;
+      }
+      await mgrPage.evaluate(({ a, b }) => {
+        window.players = [a, b];
+        window.createscoreboard();
+      }, { a: p0name, b: p1name });
+      log('runner', `players[0]=${p0name} players[1]=${p1name} swapRoles=${swapRoles}`);
+    }
 
     if (opts.verbose) {
       const verboseHook = (identity) => {
@@ -237,7 +262,7 @@ async function runMatch(opts) {
       };
       await mgrPage.evaluate(verboseHook, 'manager');
       await usPage.evaluate(verboseHook, usIdentifier);
-      await oppPage.evaluate(verboseHook, oppIdentifier);
+      if (oppPage) await oppPage.evaluate(verboseHook, oppIdentifier);
     }
 
     if (opts.throttle) {
@@ -253,15 +278,16 @@ async function runMatch(opts) {
         };
       };
       await usPage.evaluate(throttleHook);
-      await oppPage.evaluate(throttleHook);
+      if (oppPage) await oppPage.evaluate(throttleHook);
       log('runner', 'timer throttling enabled on player tabs (1000ms min)');
     }
 
+    const numPlayers = solo ? 1 : 2;
     log('runner', 'click Ping');
     await mgrPage.click('#pinger');
     await mgrPage.waitForFunction(
-      () => window.waiter === 'load' && Array.isArray(window.actives) && window.actives.length >= 2,
-      null, { timeout: 30_000 },
+      (n) => window.waiter === 'load' && Array.isArray(window.actives) && window.actives.length >= n,
+      numPlayers, { timeout: 30_000 },
     );
     log('runner', 'ping complete');
 
@@ -315,29 +341,49 @@ async function runMatch(opts) {
 
     const rewardByRole = {};
     (final.roles || []).forEach((r, i) => { rewardByRole[r] = Number(final.rewards[i]); });
-    const ourRole = final.roles[ourIsP0 ? 0 : 1];
-    const oppRole = final.roles[ourIsP0 ? 1 : 0];
 
-    result = {
-      matchId,
-      matchup,
-      ts,
-      player, opponent, game,
-      swap_roles: swapRoles,
-      our_name: usIdentifier, opp_name: oppIdentifier,
-      our_role: ourRole, opp_role: oppRole,
-      our_score: rewardByRole[ourRole] || 0,
-      opp_score: rewardByRole[oppRole] || 0,
-      our_errors: Number(final.errors?.[ourRole] || 0),
-      opp_errors: Number(final.errors?.[oppRole] || 0),
-      turns: final.msgid,
-      terminal: !!final.terminal,
-      timedOut: !!final.TIMEOUT,
-      winner: (rewardByRole[ourRole] || 0) > (rewardByRole[oppRole] || 0) ? ourRole
-            : (rewardByRole[oppRole] || 0) > (rewardByRole[ourRole] || 0) ? oppRole
-            : 'draw',
-      consoleLog: consolePath,
-    };
+    if (solo) {
+      const ourRole = final.roles[0];
+      result = {
+        matchId, matchup, ts,
+        player, opponent: null, game,
+        solo: true,
+        swap_roles: false,
+        our_name: usIdentifier, opp_name: null,
+        our_role: ourRole, opp_role: null,
+        our_score: rewardByRole[ourRole] || 0,
+        opp_score: null,
+        our_errors: Number(final.errors?.[ourRole] || 0),
+        opp_errors: null,
+        turns: final.msgid,
+        terminal: !!final.terminal,
+        timedOut: !!final.TIMEOUT,
+        winner: null,
+        consoleLog: consolePath,
+      };
+    } else {
+      const ourRole = final.roles[ourIsP0 ? 0 : 1];
+      const oppRole = final.roles[ourIsP0 ? 1 : 0];
+      result = {
+        matchId, matchup, ts,
+        player, opponent, game,
+        solo: false,
+        swap_roles: swapRoles,
+        our_name: usIdentifier, opp_name: oppIdentifier,
+        our_role: ourRole, opp_role: oppRole,
+        our_score: rewardByRole[ourRole] || 0,
+        opp_score: rewardByRole[oppRole] || 0,
+        our_errors: Number(final.errors?.[ourRole] || 0),
+        opp_errors: Number(final.errors?.[oppRole] || 0),
+        turns: final.msgid,
+        terminal: !!final.terminal,
+        timedOut: !!final.TIMEOUT,
+        winner: (rewardByRole[ourRole] || 0) > (rewardByRole[oppRole] || 0) ? ourRole
+              : (rewardByRole[oppRole] || 0) > (rewardByRole[ourRole] || 0) ? oppRole
+              : 'draw',
+        consoleLog: consolePath,
+      };
+    }
 
     fs.writeFileSync(jsonPath, JSON.stringify(result, null, 2));
     log('runner', `DONE: ${JSON.stringify(result)}`);
@@ -365,6 +411,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       console.log(red('\nTimed out.'));
     } else if (!r.terminal) {
       console.log(red('\nGame did not finish.'));
+    } else if (r.solo) {
+      const scoreColor = r.our_score >= 100 ? green : r.our_score > 0 ? bold : red;
+      console.log(`\n${scoreColor(bold('Score'))}  ${r.player} ${dim('(' + r.our_role + ')')} ${r.our_score}`);
+      if (r.our_errors > 0) console.log(red(`  ${r.our_errors} illegal move(s) by ${r.player}`));
     } else {
       const ourScore = r.our_score, oppScore = r.opp_score;
       const outcome = ourScore > oppScore ? green(bold('Win'))
