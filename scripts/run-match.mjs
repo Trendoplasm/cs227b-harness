@@ -484,6 +484,12 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     console.error(`\x1b[31mERROR: ${e.message}\x1b[0m`);
     process.exit(2);
   });
+} else if (process.argv[1] && path.basename(process.argv[1]) === 'run-match.mjs') {
+  console.error('\x1b[31mERROR: run-match.mjs was invoked directly but main-entry detection failed.\x1b[0m');
+  console.error(`  import.meta.url:  ${import.meta.url}`);
+  console.error(`  process.argv[1]:  ${process.argv[1]}`);
+  console.error('Please report this as a bug.');
+  process.exit(2);
 }
 
 export { runMatch, parseArgs };
