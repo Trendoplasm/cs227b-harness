@@ -17,10 +17,12 @@ import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import http from 'node:http';
+import os from 'node:os';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PYTHON = os.platform() === 'win32' ? 'python' : 'python3';
 const TEST_DIR = path.resolve(__dirname, '..');
 const PORT = Number(process.env.PORT || 8765);
 const BASE = `http://localhost:${PORT}`;
@@ -108,13 +110,18 @@ async function isServerUp(ms = 1500) {
 
 async function maybeSpawnServer() {
   if (await isServerUp()) return null;
-  const proc = spawn('python3', ['-m', 'http.server', String(PORT)], {
+  let spawnError = null;
+  const proc = spawn(PYTHON, ['-m', 'http.server', String(PORT)], {
     cwd: TEST_DIR,
     stdio: ['ignore', 'ignore', 'ignore'],
     detached: false,
   });
+  proc.on('error', (err) => { spawnError = err; });
   const deadline = Date.now() + 8000;
   while (Date.now() < deadline) {
+    if (spawnError) {
+      throw new Error(`Could not start HTTP server: "${PYTHON}" not found. Is Python installed?`);
+    }
     if (await isServerUp(500)) return proc;
     await new Promise((r) => setTimeout(r, 200));
   }
@@ -429,7 +436,7 @@ async function runMatch(opts) {
   return result;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const opts = parseArgs(process.argv.slice(2));
   runMatch(opts).then((r) => {
     const green = (s) => `\x1b[32m${s}\x1b[0m`;

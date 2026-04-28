@@ -12,7 +12,12 @@
 
 import { spawn } from 'node:child_process';
 import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runMatch } from './run-match.mjs';
+
+const PYTHON = os.platform() === 'win32' ? 'python' : 'python3';
 
 const green = (s) => `\x1b[32m${s}\x1b[0m`;
 const red = (s) => `\x1b[31m${s}\x1b[0m`;
@@ -56,12 +61,17 @@ async function isUp() {
 
 async function ensureServer() {
   if (await isUp()) return null;
-  const proc = spawn('python3', ['-m', 'http.server', String(PORT)], {
-    cwd: new URL('..', import.meta.url).pathname,
+  let spawnError = null;
+  const proc = spawn(PYTHON, ['-m', 'http.server', String(PORT)], {
+    cwd: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
     stdio: ['ignore', 'ignore', 'ignore'],
   });
+  proc.on('error', (err) => { spawnError = err; });
   const deadline = Date.now() + 8000;
   while (Date.now() < deadline) {
+    if (spawnError) {
+      throw new Error(`Could not start HTTP server: "${PYTHON}" not found. Is Python installed?`);
+    }
     if (await isUp()) return proc;
     await new Promise((r) => setTimeout(r, 200));
   }
