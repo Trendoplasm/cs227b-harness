@@ -7,9 +7,11 @@ node_modules/
 # Result logs
 results/
 
-# Custom players (symlinked from separate repo)
-players/*.html
-!players/myplayer.html
+# Custom players and games (your own work, not committed)
+players/local/*
+!players/local/.gitkeep
+games/local/*
+!games/local/.gitkeep
 
 # Non roster players and games (likely to fluctuate wildly over time, can always be rebuilt)
 players/dev/

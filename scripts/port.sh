@@ -20,10 +20,22 @@ fi
 
 PLAYER="$1"; shift || true
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-SRC="$HERE/players/${PLAYER}.html"
 
-if [[ ! -f "$SRC" ]]; then
-  echo "[port] missing $SRC" >&2; exit 1
+SRC=""
+for sub in local "" dev roster; do
+  if [[ -n "$sub" ]]; then
+    candidate="$HERE/players/$sub/${PLAYER}.html"
+  else
+    candidate="$HERE/players/${PLAYER}.html"
+  fi
+  if [[ -f "$candidate" ]]; then
+    SRC="$candidate"
+    break
+  fi
+done
+
+if [[ -z "$SRC" ]]; then
+  echo "[port] player '${PLAYER}' not found" >&2; exit 1
 fi
 
 SHA=$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)

@@ -970,7 +970,7 @@ function makeframe (type,p,al,facts,rules,task,caller)
   frame.caller = caller;
   return frame}
 
-//------------------------------------------------------------------------------var framelimit = 100000;
+//------------------------------------------------------------------------------var framelimit = 1000000;
 
 function callx (gen)
  {return call(gen)}

@@ -20,10 +20,10 @@ npm run fetch-games -- --dev
 
 1. Copy the starter template:
    ```bash
-   cp players/myplayer.html players/yourname.html
+   cp players/myplayer.html players/local/yourname.html
    ```
 
-2. Edit `players/yourname.html` — change `var player = 'myplayer'` to your player name and add your strategy code. The player interface has five functions:
+2. Edit `players/local/yourname.html` — change `var player = 'myplayer'` to your player name and add your strategy code. The player interface has five functions:
    - `ping()` — return `'ready'`
    - `start(role, rules, startclock, playclock)` — initialize, return `'ready'`
    - `play(move)` — return your move (or `false` if it's not your turn)
@@ -110,21 +110,22 @@ Suite results print a color-coded summary to stdout with pass/fail per match.
 
 ## Directory Structure
 
-Players and games are organized into three tiers, searched in priority order:
+Players and games are organized into four tiers, searched in priority order:
 
 ```
 players/
-  yourname.html          ← your own players (highest priority)
+  local/                 ← your own players (highest priority, gitignored)
+  myplayer.html          ← course-provided template
   dev/                   ← classmates' custom players (from developer portal)
   roster/                ← Stanford's built-in players (legal, minimax, etc.)
 
 games/
-  yourgame.html          ← your own custom games (highest priority)
+  local/                 ← your own custom games (highest priority, gitignored)
   dev/                   ← classmates' custom games
   roster/                ← Stanford's built-in games (tictactoe, breakthrough, etc.)
 ```
 
-When you run `--player legal`, the harness checks the top level first, then `dev/`, then `roster/`. This means your own players always take priority, and refreshing roster or dev content never overwrites your work.
+When you run `--player legal`, the harness checks `local/` first, then the top level, then `dev/`, then `roster/`. This means your own players always take priority, and refreshing roster or dev content never overwrites your work. Files in `local/` are gitignored, so your custom players won't be committed to the harness repo.
 
 ## Available Players
 

@@ -21,7 +21,7 @@ echo "[bootstrap] scanning HTML files under $HERE"
 
 # 1. Collect all .html files.
 HTML_FILES=()
-for dir in "$HERE" "$HERE/players" "$HERE/players/roster" "$HERE/players/dev" "$HERE/games" "$HERE/games/roster" "$HERE/games/dev"; do
+for dir in "$HERE" "$HERE/players" "$HERE/players/local" "$HERE/players/roster" "$HERE/players/dev" "$HERE/games" "$HERE/games/local" "$HERE/games/roster" "$HERE/games/dev"; do
   [[ -d "$dir" ]] || continue
   while IFS= read -r -d '' f; do
     HTML_FILES+=("$f")

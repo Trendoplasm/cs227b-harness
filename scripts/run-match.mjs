@@ -26,10 +26,11 @@ const PYTHON = os.platform() === 'win32' ? 'python' : 'python3';
 const TEST_DIR = path.resolve(__dirname, '..');
 const PORT = Number(process.env.PORT || 8765);
 const BASE = `http://localhost:${PORT}`;
+const SUBDIRS = ['local', '', 'dev', 'roster'];
 
 function allNames(kind) {
   const names = new Set();
-  for (const sub of ['', 'dev', 'roster']) {
+  for (const sub of SUBDIRS) {
     const dir = path.join(TEST_DIR, kind, sub);
     if (!fs.existsSync(dir)) continue;
     for (const f of fs.readdirSync(dir)) {
@@ -42,7 +43,7 @@ function allNames(kind) {
 function suggest(input, kind) {
   const clean = input.replace(/\.html$/, '');
   if (clean !== input) {
-    for (const sub of ['', 'dev', 'roster']) {
+    for (const sub of SUBDIRS) {
       const rel = sub ? `${kind}/${sub}/${clean}.html` : `${kind}/${clean}.html`;
       if (fs.existsSync(path.join(TEST_DIR, rel))) return clean;
     }
@@ -55,7 +56,7 @@ function suggest(input, kind) {
 }
 
 function resolvePlayer(name) {
-  for (const sub of ['', 'dev', 'roster']) {
+  for (const sub of SUBDIRS) {
     const rel = sub ? `players/${sub}/${name}.html` : `players/${name}.html`;
     if (fs.existsSync(path.join(TEST_DIR, rel))) return rel;
   }
@@ -65,7 +66,7 @@ function resolvePlayer(name) {
 }
 
 function resolveGame(name) {
-  for (const sub of ['', 'dev', 'roster']) {
+  for (const sub of SUBDIRS) {
     const rel = sub ? `games/${sub}/${name}.html` : `games/${name}.html`;
     if (fs.existsSync(path.join(TEST_DIR, rel))) return rel;
   }
