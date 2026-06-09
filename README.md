@@ -2,7 +2,7 @@
 
 A local test harness for Stanford CS 227B (General Game Playing). Develop and test your GGP player from your IDE instead of juggling browser tabs on the Gamemaster website.
 
-The harness uses [Playwright](https://playwright.dev/) to automate the same 3-tab workflow (game manager + two players) in a headless browser. All public roster players, games, and classmates' custom players from the developer portal are included — clone the repo and start testing.
+The harness uses [Playwright](https://playwright.dev/) to automate the same 3-tab workflow (game manager + two players) in a headless browser. All public roster players and games are included — clone the repo, install dependencies, and start testing.
 
 ## Quick Start
 
@@ -10,8 +10,11 @@ The harness uses [Playwright](https://playwright.dev/) to automate the same 3-ta
 git clone https://github.com/Trendoplasm/cs227b-harness.git && cd cs227b-harness
 npm install
 npx playwright install chromium
+```
 
-# Fetch the latest classmate-created players and games (will prompt login)
+Optionally, fetch classmates' custom players and games from the developer portal (requires a Stanford Gamemaster account):
+
+```bash
 npm run fetch-players -- --dev
 npm run fetch-games -- --dev
 ```
@@ -52,7 +55,7 @@ npm run match -- --player <you> --opponent <them> --game <game> [flags]
 | Flag | Description |
 |------|-------------|
 | `--player <name>` | Your player (required) |
-| `--opponent <name>` | Opponent player (required) |
+| `--opponent <name>` | Opponent player (required for multi-player games) |
 | `--game <name>` | Game to play (required) |
 | `--swap-roles` | Your player plays as the second role instead of first |
 | `--verbose` | Log all protocol messages (SEND/RECV) between manager and players |
@@ -104,7 +107,7 @@ npm run match -- --player yourname --opponent legal --game tictactoe --verbose
 
 Match results go to `results/<matchup>/`:
 - `match-<id>.json` — scores, errors, winner, terminal state
-- `match-<id>-console.log` — full console output from all three tabs
+- `match-<id>-console.log` — full console output from all tabs
 
 Suite results print a color-coded summary to stdout with pass/fail per match.
 
@@ -116,20 +119,20 @@ Players and games are organized into four tiers, searched in priority order:
 players/
   local/                 ← your own players (highest priority, gitignored)
   myplayer.html          ← course-provided template
-  dev/                   ← classmates' custom players (from developer portal)
-  roster/                ← Stanford's built-in players (legal, minimax, etc.)
+  dev/                   ← classmates' custom players (fetched via --dev, gitignored)
+  roster/                ← public roster players (included in repo)
 
 games/
   local/                 ← your own custom games (highest priority, gitignored)
-  dev/                   ← classmates' custom games
-  roster/                ← Stanford's built-in games (tictactoe, breakthrough, etc.)
+  dev/                   ← classmates' custom games (fetched via --dev, gitignored)
+  roster/                ← public roster games (included in repo)
 ```
 
-When you run `--player legal`, the harness checks `local/` first, then the top level, then `dev/`, then `roster/`. This means your own players always take priority, and refreshing roster or dev content never overwrites your work. Files in `local/` are gitignored, so your custom players won't be committed to the harness repo.
+When you run `--player legal`, the harness checks `local/` first, then the top level, then `dev/`, then `roster/`. This means your own players always take priority, and refreshing roster or dev content never overwrites your work. Files in `local/` and `dev/` are gitignored, so your custom players and fetched dev content won't be committed to the harness repo.
 
 ## Available Players
 
-**Built-in (roster):** All players from the public Gamemaster roster.
+**Built-in (roster):** All players from the public Gamemaster roster are included. The key strategy players are:
 
 | Player | Strategy |
 |--------|----------|
@@ -141,7 +144,9 @@ When you run `--player legal`, the harness checks `local/` first, then the top l
 | `mcs` | Monte Carlo search |
 | `mcts` | Monte Carlo tree search |
 
-**Dev (classmates):** Custom players from the developer portal are in `players/dev/`. Run `ls players/dev/` to see the full list.
+Run `ls players/roster/` for the full list, which also includes other players published to the public roster.
+
+**Dev (classmates):** After running `npm run fetch-players -- --dev`, classmates' custom players will be in `players/dev/`. Run `ls players/dev/` to see the full list.
 
 ## Available Games
 
@@ -156,7 +161,7 @@ When you run `--player legal`, the harness checks `local/` first, then the top l
 | `pentago` | red, black | Pentago |
 | `knights` | white, black | Knights game |
 
-Run `ls games/roster/` for the full list, `ls games/dev/` for classmates' custom games.
+Run `ls games/roster/` for the full list. After running `npm run fetch-games -- --dev`, classmates' custom games will be in `games/dev/`.
 
 ## Fetching Players & Games
 
@@ -184,14 +189,11 @@ The harness runs the same JavaScript in the same browser engine as the real Game
 
 The harness replicates what you'd do manually on the Gamemaster website:
 
-1. Opens three browser tabs in headless Chromium (via Playwright)
-2. Tab 1: your player
-3. Tab 2: opponent player
-4. Tab 3: game manager
-5. Clicks **Ping** — manager discovers both players via `localStorage`
-6. Clicks **Run** — manager sends the game rules, then alternates `play()` messages
-7. Polls until the game reaches a terminal state or times out
-8. Writes results to `results/`
+1. Opens browser tabs in headless Chromium (via Playwright) — one per player plus the game manager
+2. Clicks **Ping** — manager discovers all players via `localStorage`
+3. Clicks **Run** — manager sends the game rules, then alternates `play()` messages
+4. Polls until the game reaches a terminal state or times out
+5. Writes results to `results/`
 
 All communication between tabs uses the browser's `localStorage` API — the same protocol the Stanford site uses. Your player code runs in exactly the same environment as it would on the real Gamemaster.
 
